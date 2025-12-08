@@ -43,7 +43,7 @@ impl<Provider: DBProvider + TrieDbTxProvider> AccountReader
 {
     /// Get basic account information.
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        tracing::warn!(
+        tracing::debug!(
             "LatestStateProviderRef::basic_account: Reading account from TrieDB at {}",
             address
         );
