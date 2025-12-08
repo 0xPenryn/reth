@@ -170,7 +170,7 @@ impl<Provider: DBProvider + BlockHashReader + TrieDbTxProvider> StateProvider
         account: Address,
         storage_key: StorageKey,
     ) -> ProviderResult<Option<StorageValue>> {
-        tracing::warn!(
+        tracing::debug!(
             "LatestStateProviderRef::storage: Reading storage from TrieDB at {}",
             account
         );
