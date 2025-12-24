@@ -222,7 +222,7 @@ impl DatabaseArguments {
 }
 
 /// Wrapper for the libmdbx environment: [Environment]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DatabaseEnv {
     /// Libmdbx-sys environment.
     inner: Environment,
