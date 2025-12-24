@@ -198,6 +198,42 @@ where
         tracing::info!(target: "reth::cli", path = ?db_path, "Opening database");
         let database = Arc::new(init_db(db_path.clone(), self.db.database_args())?.with_metrics());
 
+        // Pre-warm database tables if requested
+        if let Some(warmup_mode) = self.db.warmup {
+            if warmup_mode != reth_node_core::args::WarmupMode::None {
+                use reth_db::warmup_database;
+                use reth_node_core::args::WarmupMode as NodeWarmupMode;
+                
+                // Convert node warmup mode to db warmup mode
+                let db_warmup_mode = match warmup_mode {
+                    NodeWarmupMode::None => reth_db::warmup::WarmupMode::None,
+                    NodeWarmupMode::State => reth_db::warmup::WarmupMode::State,
+                    NodeWarmupMode::Execution => reth_db::warmup::WarmupMode::Execution,
+                    NodeWarmupMode::All => reth_db::warmup::WarmupMode::All,
+                    _ => {
+                        tracing::warn!(
+                            target: "reth::cli",
+                            "Unknown warmup mode, defaulting to None"
+                        );
+                        reth_db::warmup::WarmupMode::None
+                    }
+                };
+                
+                tracing::info!(
+                    target: "reth::cli",
+                    mode = ?warmup_mode,
+                    "Pre-warming database tables"
+                );
+                if let Err(e) = warmup_database(&database, db_warmup_mode, self.db.warmup_memory_limit) {
+                    tracing::warn!(
+                        target: "reth::cli",
+                        error = ?e,
+                        "Failed to pre-warm database tables, continuing anyway"
+                    );
+                }
+            }
+        }
+
         if with_unused_ports {
             node_config = node_config.with_unused_ports();
         }

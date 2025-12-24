@@ -22,6 +22,8 @@ mod metrics;
 pub mod static_file;
 #[cfg(feature = "mdbx")]
 mod utils;
+#[cfg(feature = "mdbx")]
+pub mod warmup;
 pub mod version;
 
 #[cfg(feature = "mdbx")]
@@ -33,6 +35,8 @@ pub use utils::is_database_empty;
 
 #[cfg(feature = "mdbx")]
 pub use mdbx::{create_db, init_db, open_db, open_db_read_only, DatabaseEnv, DatabaseEnvKind};
+#[cfg(feature = "mdbx")]
+pub use warmup::{warmup_database, WarmupMode};
 
 pub use models::ClientVersion;
 pub use reth_db_api::*;

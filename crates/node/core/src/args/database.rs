@@ -14,6 +14,92 @@ use reth_db::{
 };
 use reth_storage_errors::db::LogLevel;
 
+/// Database table pre-warming mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WarmupMode {
+    /// No pre-warming (default).
+    None,
+    /// Pre-warm only state tables (PlainAccountState, PlainStorageState, Bytecodes).
+    State,
+    /// Pre-warm tables needed for block execution (state + block data tables).
+    Execution,
+    /// Pre-warm all tables.
+    All,
+}
+
+impl Default for WarmupMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl FromStr for WarmupMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "state" => Ok(Self::State),
+            "execution" => Ok(Self::Execution),
+            "all" => Ok(Self::All),
+            _ => Err(format!(
+                "Invalid warmup mode: {s}. Valid options are: none, state, execution, all"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for WarmupMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::State => write!(f, "state"),
+            Self::Execution => write!(f, "execution"),
+            Self::All => write!(f, "all"),
+        }
+    }
+}
+
+/// clap value parser for [`WarmupMode`].
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+struct WarmupModeValueParser;
+
+impl TypedValueParser for WarmupModeValueParser {
+    type Value = WarmupMode;
+
+    fn parse_ref(
+        &self,
+        _cmd: &Command,
+        arg: Option<&Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, Error> {
+        let val =
+            value.to_str().ok_or_else(|| Error::raw(ErrorKind::InvalidUtf8, "Invalid UTF-8"))?;
+
+        val.parse::<WarmupMode>().map_err(|err| {
+            let arg = arg.map(|a| a.to_string()).unwrap_or_else(|| "...".to_owned());
+            let msg = format!(
+                "Invalid value '{val}' for {arg}: {err}.\n    Possible values: none, state, execution, all"
+            );
+            clap::Error::raw(clap::error::ErrorKind::InvalidValue, msg)
+        })
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        let values = vec![
+            PossibleValue::new("none").help("Disable pre-warming (default)"),
+            PossibleValue::new("state")
+                .help("Pre-warm only state tables (PlainAccountState, PlainStorageState, Bytecodes)"),
+            PossibleValue::new("execution")
+                .help("Pre-warm tables needed for block execution (state + block data tables)"),
+            PossibleValue::new("all").help("Pre-warm all tables"),
+        ];
+        Some(Box::new(values.into_iter()))
+    }
+}
+
 /// Parameters for database configuration
 #[derive(Debug, Args, PartialEq, Eq, Default, Clone, Copy)]
 #[command(next_help_heading = "Database")]
@@ -60,6 +146,24 @@ pub struct DatabaseArgs {
         value_parser = value_parser!(SyncMode),
     )]
     pub sync_mode: Option<SyncMode>,
+    /// Pre-warm specific database tables into memory at startup.
+    ///
+    /// This option improves performance by loading frequently accessed tables
+    /// into memory before block execution begins. Tables are prioritized by
+    /// access frequency during block execution.
+    ///
+    /// Options:
+    /// - "state" - Pre-warm only state tables (PlainAccountState, PlainStorageState, Bytecodes)
+    /// - "execution" - Pre-warm tables needed for block execution (state + block data tables)
+    /// - "all" - Pre-warm all tables
+    /// - "none" - Disable pre-warming (default)
+    #[arg(long = "db.warmup", value_parser = WarmupModeValueParser::default())]
+    pub warmup: Option<WarmupMode>,
+    /// Maximum memory to use for pre-warming, as a percentage of available system memory (0-100).
+    ///
+    /// Defaults to 50% if not specified. Set to 0 to disable memory limit checks.
+    #[arg(long = "db.warmup-memory-limit")]
+    pub warmup_memory_limit: Option<u8>,
 }
 
 impl DatabaseArgs {
@@ -434,5 +538,65 @@ mod tests {
         let result =
             CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.sync-mode", "ultra-fast"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_parser_with_valid_warmup_mode() {
+        let cmd =
+            CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.warmup", "state"]).unwrap();
+        assert!(matches!(cmd.args.warmup, Some(WarmupMode::State)));
+
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from([
+            "reth",
+            "--db.warmup",
+            "execution",
+        ])
+        .unwrap();
+        assert!(matches!(cmd.args.warmup, Some(WarmupMode::Execution)));
+
+        let cmd =
+            CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.warmup", "all"]).unwrap();
+        assert!(matches!(cmd.args.warmup, Some(WarmupMode::All)));
+
+        let cmd =
+            CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.warmup", "none"]).unwrap();
+        assert!(matches!(cmd.args.warmup, Some(WarmupMode::None)));
+    }
+
+    #[test]
+    fn test_command_parser_with_invalid_warmup_mode() {
+        let result =
+            CommandParser::<DatabaseArgs>::try_parse_from(["reth", "--db.warmup", "invalid"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_parser_with_warmup_memory_limit() {
+        let cmd = CommandParser::<DatabaseArgs>::try_parse_from([
+            "reth",
+            "--db.warmup",
+            "state",
+            "--db.warmup-memory-limit",
+            "75",
+        ])
+        .unwrap();
+        assert_eq!(cmd.args.warmup_memory_limit, Some(75));
+    }
+
+    #[test]
+    fn test_warmup_mode_from_str() {
+        assert_eq!("none".parse::<WarmupMode>().unwrap(), WarmupMode::None);
+        assert_eq!("state".parse::<WarmupMode>().unwrap(), WarmupMode::State);
+        assert_eq!("execution".parse::<WarmupMode>().unwrap(), WarmupMode::Execution);
+        assert_eq!("all".parse::<WarmupMode>().unwrap(), WarmupMode::All);
+        assert!("invalid".parse::<WarmupMode>().is_err());
+    }
+
+    #[test]
+    fn test_warmup_mode_display() {
+        assert_eq!(WarmupMode::None.to_string(), "none");
+        assert_eq!(WarmupMode::State.to_string(), "state");
+        assert_eq!(WarmupMode::Execution.to_string(), "execution");
+        assert_eq!(WarmupMode::All.to_string(), "all");
     }
 }
