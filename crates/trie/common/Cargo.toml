@@ -87,6 +87,7 @@ std = [
     "revm-database/std",
     "revm-state/std",
 ]
+icicle = []
 eip1186 = ["alloy-rpc-types-eth/serde", "dep:alloy-serde"]
 serde = [
     "dep:serde",

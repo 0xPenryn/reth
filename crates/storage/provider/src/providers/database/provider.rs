@@ -33,6 +33,7 @@ use alloy_primitives::{
 use itertools::Itertools;
 use parking_lot::RwLock;
 use rayon::slice::ParallelSliceMut;
+use reth_icicle as icicle;
 use reth_chain_state::{ComputedTrieData, ExecutedBlock};
 use reth_chainspec::{ChainInfo, ChainSpecProvider, EthChainSpec};
 use reth_db_api::{
@@ -2851,8 +2852,26 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         changesets: impl IntoIterator<Item = (Address, Option<Account>)>,
     ) -> ProviderResult<BTreeMap<B256, Option<Account>>> {
         let mut hashed_accounts_cursor = self.tx.cursor_write::<tables::HashedAccounts>()?;
-        let hashed_accounts =
-            changesets.into_iter().map(|(ad, ac)| (keccak256(ad), ac)).collect::<BTreeMap<_, _>>();
+        let changesets = changesets.into_iter().collect::<Vec<_>>();
+        let hashed_accounts: BTreeMap<B256, Option<Account>> =
+            if icicle::should_use_keccak_batch(changesets.len()) {
+                let mut inputs = Vec::with_capacity(changesets.len() * 20);
+                for (address, _) in &changesets {
+                    inputs.extend_from_slice(address.as_slice());
+                }
+
+                let hashes = icicle::keccak256_batch_fixed_or_cpu(&inputs, 20);
+                changesets
+                    .into_iter()
+                    .zip(hashes)
+                    .map(|((_, account), hash)| (hash, account))
+                    .collect()
+            } else {
+                changesets
+                    .into_iter()
+                    .map(|(ad, ac)| (keccak256(ad), ac))
+                    .collect()
+            };
         for (hashed_address, account) in &hashed_accounts {
             if let Some(account) = account {
                 hashed_accounts_cursor.upsert(*hashed_address, account)?;
@@ -2914,16 +2933,47 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         &self,
         storages: impl IntoIterator<Item = (Address, impl IntoIterator<Item = StorageEntry>)>,
     ) -> ProviderResult<HashMap<B256, BTreeSet<B256>>> {
+        let flat_entries = storages
+            .into_iter()
+            .flat_map(|(address, storage)| {
+                storage.into_iter().map(move |entry| (address, entry))
+            })
+            .collect::<Vec<_>>();
+
+        if flat_entries.is_empty() {
+            return Ok(HashMap::default())
+        }
+
         // hash values
-        let hashed_storages =
-            storages.into_iter().fold(BTreeMap::new(), |mut map, (address, storage)| {
-                let storage = storage.into_iter().fold(BTreeMap::new(), |mut map, entry| {
-                    map.insert(keccak256(entry.key), entry.value);
-                    map
-                });
-                map.insert(keccak256(address), storage);
+        let hashed_storages = if icicle::should_use_keccak_batch(flat_entries.len()) {
+            let mut address_inputs = Vec::with_capacity(flat_entries.len() * 20);
+            let mut key_inputs = Vec::with_capacity(flat_entries.len() * 32);
+            for (address, entry) in &flat_entries {
+                address_inputs.extend_from_slice(address.as_slice());
+                key_inputs.extend_from_slice(entry.key.as_slice());
+            }
+
+            let address_hashes = icicle::keccak256_batch_fixed_or_cpu(&address_inputs, 20);
+            let key_hashes = icicle::keccak256_batch_fixed_or_cpu(&key_inputs, 32);
+
+            let mut map = BTreeMap::new();
+            for ((_, entry), (hashed_address, hashed_key)) in flat_entries
+                .into_iter()
+                .zip(address_hashes.into_iter().zip(key_hashes))
+            {
+                map.entry(hashed_address)
+                    .or_insert_with(BTreeMap::new)
+                    .insert(hashed_key, entry.value);
+            }
+            map
+        } else {
+            flat_entries.into_iter().fold(BTreeMap::new(), |mut map, (address, entry)| {
+                map.entry(keccak256(address))
+                    .or_insert_with(BTreeMap::new)
+                    .insert(keccak256(entry.key), entry.value);
                 map
-            });
+            })
+        };
 
         let hashed_storage_keys = hashed_storages
             .iter()

@@ -174,6 +174,12 @@ impl LaunchContext {
         toml_config.static_files =
             config.static_files.merge_with_config(toml_config.static_files, config.pruning.minimal);
 
+        // Apply Icicle CLI overrides to toml config.
+        config.icicle.apply_to(&mut toml_config.icicle);
+
+        // Initialize Icicle runtime if enabled.
+        reth_icicle::init(&toml_config.icicle);
+
         Ok(toml_config)
     }
 

@@ -36,6 +36,8 @@ use reth_node_builder::{
 use reth_optimism_chainspec::{OpChainSpec, OpHardfork};
 use reth_optimism_consensus::OpBeaconConsensus;
 use reth_optimism_evm::{OpEvmConfig, OpRethReceiptBuilder};
+#[cfg(feature = "icicle")]
+use reth_optimism_evm::OpEvmFactory;
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_payload_builder::{
     builder::OpPayloadTransactions,
@@ -877,10 +879,25 @@ impl<Node> ExecutorBuilder<Node> for OpExecutorBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = OpPrimitives>>,
 {
+    #[cfg(feature = "icicle")]
+    type EVM = OpEvmConfig<
+        <Node::Types as NodeTypes>::ChainSpec,
+        <Node::Types as NodeTypes>::Primitives,
+        OpRethReceiptBuilder,
+        reth_evm::icicle::IcicleEvmFactory<OpEvmFactory>,
+    >;
+    #[cfg(not(feature = "icicle"))]
     type EVM =
         OpEvmConfig<<Node::Types as NodeTypes>::ChainSpec, <Node::Types as NodeTypes>::Primitives>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        #[cfg(feature = "icicle")]
+        let evm_config = OpEvmConfig::new_with_evm_factory(
+            ctx.chain_spec(),
+            OpRethReceiptBuilder::default(),
+            reth_evm::icicle::IcicleEvmFactory::new(OpEvmFactory::default()),
+        );
+        #[cfg(not(feature = "icicle"))]
         let evm_config = OpEvmConfig::new(ctx.chain_spec(), OpRethReceiptBuilder::default());
 
         Ok(evm_config)

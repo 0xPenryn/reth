@@ -31,6 +31,10 @@ default = ["jemalloc", "otlp", "reth-optimism-evm/portable", "js-tracer", "kecca
 
 otlp = ["reth-optimism-cli/otlp"]
 
+icicle = [
+    "reth-optimism-node/icicle",
+]
+
 js-tracer = [
     "reth-optimism-node/js-tracer",
 ]

@@ -8,6 +8,7 @@ use reth_db_api::{
     RawKey, RawTable, RawValue,
 };
 use reth_etl::Collector;
+use reth_icicle as icicle;
 use reth_primitives_traits::Account;
 use reth_provider::{AccountExtReader, DBProvider, HashingWriter, StatsReader};
 use reth_stages_api::{
@@ -165,17 +166,31 @@ where
             let mut channels = Vec::with_capacity(MAXIMUM_CHANNELS);
 
             // channels used to return result of account hashing
-            for chunk in &accounts_cursor.walk(None)?.chunks(WORKER_CHUNK_SIZE) {
+            let worker_chunk_size = icicle::hashing_chunk_size_hint(WORKER_CHUNK_SIZE);
+            for chunk in &accounts_cursor.walk(None)?.chunks(worker_chunk_size) {
                 // An _unordered_ channel to receive results from a rayon job
                 let (tx, rx) = mpsc::channel();
                 channels.push(rx);
 
                 let chunk = chunk.collect::<Result<Vec<_>, _>>()?;
+                let use_gpu = icicle::should_use_keccak_batch(chunk.len());
                 // Spawn the hashing task onto the global rayon pool
                 rayon::spawn(move || {
-                    for (address, account) in chunk {
-                        let address = address.key().unwrap();
-                        let _ = tx.send((RawKey::new(keccak256(address)), account));
+                    if use_gpu {
+                        let mut inputs = Vec::with_capacity(chunk.len() * 20);
+                        for (address, _) in &chunk {
+                            inputs.extend_from_slice(address.key().unwrap().as_ref());
+                        }
+
+                        let hashes = icicle::keccak256_batch_fixed_or_cpu(&inputs, 20);
+                        for ((_, account), hash) in chunk.into_iter().zip(hashes) {
+                            let _ = tx.send((RawKey::new(hash), account));
+                        }
+                    } else {
+                        for (address, account) in chunk {
+                            let address = address.key().unwrap();
+                            let _ = tx.send((RawKey::new(keccak256(address)), account));
+                        }
                     }
                 });
 

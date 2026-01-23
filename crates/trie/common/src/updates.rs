@@ -4,9 +4,10 @@ use crate::{
 };
 use alloc::{
     collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-    sync::Arc,
     vec::Vec,
 };
+#[cfg(feature = "rayon")]
+use alloc::sync::Arc;
 use alloy_primitives::{
     map::{B256Map, B256Set, HashMap, HashSet},
     FixedBytes, B256,

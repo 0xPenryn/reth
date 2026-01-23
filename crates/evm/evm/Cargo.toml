@@ -19,6 +19,7 @@ reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-storage-errors.workspace = true
 reth-trie-common.workspace = true
+reth-icicle = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -58,6 +59,7 @@ std = [
     "reth-trie-common/std",
     "reth-ethereum-primitives/std",
 ]
+icicle = ["std", "dep:reth-icicle", "reth-icicle/icicle"]
 metrics = ["std", "dep:metrics", "dep:reth-metrics"]
 test-utils = [
     "reth-primitives-traits/test-utils",

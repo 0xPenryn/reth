@@ -3,6 +3,8 @@
 pub use crate::{payload::EthereumPayloadBuilder, EthereumEngineValidator};
 use crate::{EthEngineTypes, EthEvmConfig};
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
+#[cfg(feature = "icicle")]
+use alloy_evm::EthEvmFactory;
 use alloy_network::Ethereum;
 use alloy_rpc_types_engine::ExecutionData;
 use reth_chainspec::{ChainSpec, EthChainSpec, EthereumHardforks, Hardforks};
@@ -16,6 +18,8 @@ use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     eth::spec::EthExecutorSpec, ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
 };
+#[cfg(feature = "icicle")]
+use reth_evm::icicle::IcicleEvmFactory;
 use reth_network::{primitives::BasicNetworkPrimitives, NetworkHandle, PeersInfo};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, HeaderTy, NodeAddOns, NodePrimitives,
@@ -439,10 +443,21 @@ where
     >,
     Node: FullNodeTypes<Types = Types>,
 {
+    #[cfg(feature = "icicle")]
+    type EVM = EthEvmConfig<Types::ChainSpec, IcicleEvmFactory<EthEvmFactory>>;
+    #[cfg(not(feature = "icicle"))]
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        Ok(EthEvmConfig::new(ctx.chain_spec()))
+        #[cfg(feature = "icicle")]
+        {
+            let evm_factory = IcicleEvmFactory::new(EthEvmFactory::default());
+            return Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), evm_factory));
+        }
+        #[cfg(not(feature = "icicle"))]
+        {
+            Ok(EthEvmConfig::new(ctx.chain_spec()))
+        }
     }
 }
 

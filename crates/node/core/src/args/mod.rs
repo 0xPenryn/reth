@@ -84,5 +84,9 @@ pub use static_files::{StaticFilesArgs, MINIMAL_BLOCKS_PER_FILE};
 mod rocksdb;
 pub use rocksdb::{RocksDbArgs, RocksDbArgsError};
 
+/// `IcicleArgs` for configuring Icicle GPU acceleration.
+mod icicle;
+pub use icicle::IcicleArgs;
+
 mod error;
 pub mod types;

@@ -182,6 +182,12 @@ min-trace-logs = [
 
 edge = ["reth-ethereum-cli/edge", "reth-node-core/edge"]
 
+icicle = [
+    "reth-node-builder/icicle",
+    "reth-provider/icicle",
+    "reth-node-ethereum/icicle",
+]
+
 [[bin]]
 name = "reth"
 path = "src/main.rs"

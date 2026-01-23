@@ -1,7 +1,21 @@
 //! Optimism block execution strategy.
 
 /// Helper type with backwards compatible methods to obtain executor providers.
-pub type OpExecutorProvider = crate::OpEvmConfig;
+#[cfg(feature = "icicle")]
+pub type OpExecutorProvider = crate::OpEvmConfig<
+    reth_optimism_chainspec::OpChainSpec,
+    reth_optimism_primitives::OpPrimitives,
+    crate::OpRethReceiptBuilder,
+    reth_evm::icicle::IcicleEvmFactory<crate::OpEvmFactory>,
+>;
+/// Helper type with backwards compatible methods to obtain executor providers.
+#[cfg(not(feature = "icicle"))]
+pub type OpExecutorProvider = crate::OpEvmConfig<
+    reth_optimism_chainspec::OpChainSpec,
+    reth_optimism_primitives::OpPrimitives,
+    crate::OpRethReceiptBuilder,
+    crate::OpEvmFactory,
+>;
 
 #[cfg(test)]
 mod tests {

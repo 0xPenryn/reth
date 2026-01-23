@@ -31,6 +31,7 @@ reth-evm.workspace = true
 reth-exex.workspace = true
 reth-fs-util.workspace = true
 reth-invalid-block-hooks.workspace = true
+reth-icicle.workspace = true
 reth-network-api.workspace = true
 reth-network-p2p.workspace = true
 reth-network.workspace = true
@@ -96,6 +97,7 @@ reth-evm-ethereum = { workspace = true, features = ["test-utils"] }
 
 [features]
 default = []
+icicle = ["reth-icicle/icicle"]
 js-tracer = [
     "reth-rpc/js-tracer",
     "reth-node-ethereum/js-tracer",

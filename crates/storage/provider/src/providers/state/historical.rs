@@ -17,6 +17,7 @@ use reth_storage_api::{
     StorageChangeSetReader, StorageRootProvider, StorageSettingsCache,
 };
 use reth_storage_errors::provider::ProviderResult;
+use reth_icicle as icicle;
 use reth_trie::{
     proof::{Proof, StorageProof},
     updates::TrieUpdates,
@@ -397,7 +398,7 @@ impl<Provider: DBProvider + ChangeSetReader + StorageChangeSetReader + BlockNumR
 
 impl<Provider> HashedPostStateProvider for HistoricalStateProviderRef<'_, Provider> {
     fn hashed_post_state(&self, bundle_state: &revm_database::BundleState) -> HashedPostState {
-        HashedPostState::from_bundle_state::<KeccakKeyHasher>(bundle_state.state())
+        icicle::hashed_post_state_from_bundle_state(bundle_state)
     }
 }
 

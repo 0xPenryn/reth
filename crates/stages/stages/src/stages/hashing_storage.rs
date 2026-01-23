@@ -9,6 +9,7 @@ use reth_db_api::{
     transaction::{DbTx, DbTxMut},
 };
 use reth_etl::Collector;
+use reth_icicle as icicle;
 use reth_primitives_traits::StorageEntry;
 use reth_provider::{DBProvider, HashingWriter, StatsReader, StorageReader};
 use reth_stages_api::{
@@ -97,25 +98,48 @@ where
                 Collector::new(self.etl_config.file_size, self.etl_config.dir.clone());
             let mut channels = Vec::with_capacity(MAXIMUM_CHANNELS);
 
-            for chunk in &storage_cursor.walk(None)?.chunks(WORKER_CHUNK_SIZE) {
+            let worker_chunk_size = icicle::hashing_chunk_size_hint(WORKER_CHUNK_SIZE);
+            for chunk in &storage_cursor.walk(None)?.chunks(worker_chunk_size) {
                 // An _unordered_ channel to receive results from a rayon job
                 let (tx, rx) = mpsc::channel();
                 channels.push(rx);
 
                 let chunk = chunk.collect::<Result<Vec<_>, _>>()?;
+                let use_gpu = icicle::should_use_keccak_batch(chunk.len());
                 // Spawn the hashing task onto the global rayon pool
                 rayon::spawn(move || {
-                    // Cache hashed address since PlainStorageState is sorted by address
-                    let (mut last_addr, mut hashed_addr) = (Address::ZERO, HASHED_ZERO_ADDRESS);
-                    for (address, slot) in chunk {
-                        if address != last_addr {
-                            last_addr = address;
-                            hashed_addr = keccak256(address);
+                    if use_gpu {
+                        let mut slot_inputs = Vec::with_capacity(chunk.len() * 32);
+                        for (_, slot) in &chunk {
+                            slot_inputs.extend_from_slice(slot.key.as_slice());
                         }
-                        let mut addr_key = Vec::with_capacity(64);
-                        addr_key.put_slice(hashed_addr.as_slice());
-                        addr_key.put_slice(keccak256(slot.key).as_slice());
-                        let _ = tx.send((addr_key, CompactU256::from(slot.value)));
+
+                        let slot_hashes = icicle::keccak256_batch_fixed_or_cpu(&slot_inputs, 32);
+                        // Cache hashed address since PlainStorageState is sorted by address
+                        let (mut last_addr, mut hashed_addr) = (Address::ZERO, HASHED_ZERO_ADDRESS);
+                        for ((address, slot), slot_hash) in chunk.into_iter().zip(slot_hashes) {
+                            if address != last_addr {
+                                last_addr = address;
+                                hashed_addr = keccak256(address);
+                            }
+                            let mut addr_key = Vec::with_capacity(64);
+                            addr_key.put_slice(hashed_addr.as_slice());
+                            addr_key.put_slice(slot_hash.as_slice());
+                            let _ = tx.send((addr_key, CompactU256::from(slot.value)));
+                        }
+                    } else {
+                        // Cache hashed address since PlainStorageState is sorted by address
+                        let (mut last_addr, mut hashed_addr) = (Address::ZERO, HASHED_ZERO_ADDRESS);
+                        for (address, slot) in chunk {
+                            if address != last_addr {
+                                last_addr = address;
+                                hashed_addr = keccak256(address);
+                            }
+                            let mut addr_key = Vec::with_capacity(64);
+                            addr_key.put_slice(hashed_addr.as_slice());
+                            addr_key.put_slice(keccak256(slot.key).as_slice());
+                            let _ = tx.send((addr_key, CompactU256::from(slot.value)));
+                        }
                     }
                 });
 

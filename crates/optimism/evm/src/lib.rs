@@ -89,23 +89,43 @@ impl<ChainSpec, N: NodePrimitives, R: Clone, EvmFactory: Clone> Clone
     }
 }
 
-impl<ChainSpec: OpHardforks> OpEvmConfig<ChainSpec> {
+impl<ChainSpec, EvmFactory> OpEvmConfig<
+    ChainSpec,
+    OpPrimitives,
+    OpRethReceiptBuilder,
+    EvmFactory,
+>
+where
+    ChainSpec: OpHardforks,
+    EvmFactory: Default,
+{
     /// Creates a new [`OpEvmConfig`] with the given chain spec for OP chains.
     pub fn optimism(chain_spec: Arc<ChainSpec>) -> Self {
-        Self::new(chain_spec, OpRethReceiptBuilder::default())
+        Self::new_with_evm_factory(chain_spec, OpRethReceiptBuilder::default(), EvmFactory::default())
     }
 }
 
 impl<ChainSpec: OpHardforks, N: NodePrimitives, R> OpEvmConfig<ChainSpec, N, R> {
     /// Creates a new [`OpEvmConfig`] with the given chain spec.
     pub fn new(chain_spec: Arc<ChainSpec>, receipt_builder: R) -> Self {
+        Self::new_with_evm_factory(chain_spec, receipt_builder, OpEvmFactory::default())
+    }
+}
+
+impl<ChainSpec, N, R, EvmFactory> OpEvmConfig<ChainSpec, N, R, EvmFactory>
+where
+    ChainSpec: OpHardforks,
+    N: NodePrimitives,
+{
+    /// Creates a new [`OpEvmConfig`] with the given chain spec, receipt builder, and EVM factory.
+    pub fn new_with_evm_factory(
+        chain_spec: Arc<ChainSpec>,
+        receipt_builder: R,
+        evm_factory: EvmFactory,
+    ) -> Self {
         Self {
             block_assembler: OpBlockAssembler::new(chain_spec.clone()),
-            executor_factory: OpBlockExecutorFactory::new(
-                receipt_builder,
-                chain_spec,
-                OpEvmFactory::default(),
-            ),
+            executor_factory: OpBlockExecutorFactory::new(receipt_builder, chain_spec, evm_factory),
             _pd: core::marker::PhantomData,
         }
     }
@@ -207,7 +227,8 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<ChainSpec, N, R> ConfigureEngineEvm<OpExecutionData> for OpEvmConfig<ChainSpec, N, R>
+impl<ChainSpec, N, R, EvmF> ConfigureEngineEvm<OpExecutionData>
+    for OpEvmConfig<ChainSpec, N, R, EvmF>
 where
     ChainSpec: EthChainSpec<Header = Header> + OpHardforks,
     N: NodePrimitives<
@@ -219,6 +240,15 @@ where
     >,
     OpTransaction<TxEnv>: FromRecoveredTx<N::SignedTx> + FromTxWithEncoded<N::SignedTx>,
     R: OpReceiptBuilder<Receipt: DepositReceipt, Transaction: SignedTransaction>,
+    EvmF: EvmFactory<
+            Tx: FromRecoveredTx<R::Transaction>
+                    + FromTxWithEncoded<R::Transaction>
+                    + TransactionEnv
+                    + OpTxEnv,
+            Precompiles = PrecompilesMap,
+            Spec = OpSpecId,
+            BlockEnv = BlockEnv,
+        > + Debug,
     Self: Send + Sync + Unpin + Clone + 'static,
 {
     fn evm_env_for_payload(

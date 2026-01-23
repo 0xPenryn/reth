@@ -40,6 +40,7 @@ reth-payload-primitives.workspace = true
 
 # ethereum
 alloy-eips.workspace = true
+alloy-evm = { workspace = true, optional = true }
 alloy-network.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
@@ -84,6 +85,7 @@ similar-asserts.workspace = true
 
 [features]
 default = []
+icicle = ["reth-evm/icicle", "dep:alloy-evm"]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "reth-node-core/asm-keccak",

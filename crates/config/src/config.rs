@@ -25,6 +25,9 @@ pub struct Config {
     /// Configuration for pruning.
     #[cfg_attr(feature = "serde", serde(default))]
     pub prune: PruneConfig,
+    /// Configuration for optional Icicle GPU acceleration.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub icicle: IcicleConfig,
     /// Configuration for the discovery service.
     pub peers: PeersConfig,
     /// Configuration for peer sessions.
@@ -38,6 +41,70 @@ impl Config {
     /// Sets the pruning configuration.
     pub fn set_prune_config(&mut self, prune_config: PruneConfig) {
         self.prune = prune_config;
+    }
+}
+
+/// Icicle GPU backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum IcicleBackend {
+    /// Automatically select a backend based on installed runtime.
+    Auto,
+    /// Force the CUDA backend.
+    Cuda,
+    /// Force the Metal backend.
+    Metal,
+}
+
+impl Default for IcicleBackend {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// Configuration for optional Icicle GPU acceleration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct IcicleConfig {
+    /// Enables Icicle acceleration.
+    pub enabled: bool,
+    /// Backend selection.
+    pub backend: IcicleBackend,
+    /// Optional backend install directory override.
+    pub backend_dir: Option<PathBuf>,
+    /// Optional device index to select.
+    pub device: Option<u32>,
+    /// Minimum batch size for Keccak hashing offload.
+    pub min_batch: usize,
+    /// Enable hashing stage acceleration.
+    pub hashing: bool,
+    /// Enable state root / trie hashing acceleration (currently used where batched hashing is
+    /// available).
+    pub state_root: bool,
+    /// Enable precompile acceleration (bn254/ecpairing when available).
+    pub precompiles: bool,
+    /// Enable sender recovery acceleration when supported.
+    pub sender_recovery: bool,
+    /// Enable KZG acceleration when supported.
+    pub kzg: bool,
+}
+
+impl Default for IcicleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: IcicleBackend::Auto,
+            backend_dir: None,
+            device: None,
+            min_batch: 1024,
+            hashing: true,
+            state_root: true,
+            precompiles: true,
+            sender_recovery: true,
+            kzg: false,
+        }
     }
 }
 

@@ -49,6 +49,9 @@ mod engine;
 #[cfg(feature = "std")]
 pub use engine::{ConfigureEngineEvm, ExecutableTxIterator, ExecutableTxTuple};
 
+#[cfg(feature = "icicle")]
+pub mod icicle;
+
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod noop;

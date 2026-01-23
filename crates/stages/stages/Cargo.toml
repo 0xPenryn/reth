@@ -26,6 +26,7 @@ reth-era-utils.workspace = true
 reth-era.workspace = true
 reth-exex.workspace = true
 reth-fs-util.workspace = true
+reth-icicle.workspace = true
 reth-network-p2p.workspace = true
 reth-primitives-traits = { workspace = true, features = ["serde-bincode-compat"] }
 reth-provider.workspace = true
@@ -118,6 +119,7 @@ test-utils = [
     "reth-ethereum-primitives?/test-utils",
     "reth-evm-ethereum/test-utils",
 ]
+icicle = ["reth-icicle/icicle"]
 rocksdb = ["reth-provider/rocksdb"]
 
 [[bench]]

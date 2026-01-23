@@ -2,8 +2,8 @@
 
 use crate::{
     args::{
-        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, NetworkArgs, PayloadBuilderArgs,
-        PruningArgs, RocksDbArgs, RpcServerArgs, StaticFilesArgs, TxPoolArgs,
+        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, IcicleArgs, NetworkArgs,
+        PayloadBuilderArgs, PruningArgs, RocksDbArgs, RpcServerArgs, StaticFilesArgs, TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -154,6 +154,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All `RocksDB` table routing arguments
     pub rocksdb: RocksDbArgs,
+
+    /// All Icicle GPU acceleration related arguments
+    pub icicle: IcicleArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -186,6 +189,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: EraArgs::default(),
             static_files: StaticFilesArgs::default(),
             rocksdb: RocksDbArgs::default(),
+            icicle: IcicleArgs::default(),
         }
     }
 
@@ -261,6 +265,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             rocksdb,
+            icicle,
             ..
         } = self;
         NodeConfig {
@@ -281,6 +286,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             rocksdb,
+            icicle,
         }
     }
 
@@ -564,6 +570,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: self.era,
             static_files: self.static_files,
             rocksdb: self.rocksdb,
+            icicle: self.icicle,
         }
     }
 
@@ -606,6 +613,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             era: self.era.clone(),
             static_files: self.static_files,
             rocksdb: self.rocksdb,
+            icicle: self.icicle.clone(),
         }
     }
 }

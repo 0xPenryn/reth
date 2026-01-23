@@ -31,6 +31,7 @@ reth-codecs.workspace = true
 reth-chain-state.workspace = true
 reth-node-types.workspace = true
 reth-static-file-types.workspace = true
+reth-icicle.workspace = true
 # ethereum
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
@@ -86,6 +87,7 @@ tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread"] }
 
 [features]
 edge = ["reth-storage-api/edge", "rocksdb"]
+icicle = ["reth-icicle/icicle"]
 rocksdb = ["dep:rocksdb"]
 test-utils = [
     "reth-db/test-utils",
