@@ -2980,7 +2980,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.114",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4879,6 +4879,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "icicle-bn254"
+version = "4.0.0"
+source = "git+https://github.com/ingonyama-zk/icicle.git#625532a624e5aaa6e9d31a1c92587f1fcc30dc76"
+dependencies = [
+ "cmake",
+ "icicle-core",
+ "icicle-hash",
+ "icicle-runtime",
+ "serde",
 ]
 
 [[package]]
@@ -8912,6 +8924,7 @@ dependencies = [
  "derive_more",
  "futures-util",
  "metrics",
+ "op-revm",
  "rayon",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
@@ -9089,6 +9102,11 @@ name = "reth-icicle"
 version = "1.10.2"
 dependencies = [
  "alloy-primitives",
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-serialize 0.5.0",
+ "icicle-bn254",
  "icicle-core",
  "icicle-hash",
  "icicle-runtime",

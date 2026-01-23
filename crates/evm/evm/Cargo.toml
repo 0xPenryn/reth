@@ -28,6 +28,7 @@ alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
+op-revm = { workspace = true, optional = true }
 
 auto_impl.workspace = true
 derive_more.workspace = true
@@ -66,4 +67,4 @@ test-utils = [
     "reth-trie-common/test-utils",
     "reth-ethereum-primitives/test-utils",
 ]
-op = ["alloy-evm/op", "reth-primitives-traits/op"]
+op = ["alloy-evm/op", "reth-primitives-traits/op", "dep:op-revm"]

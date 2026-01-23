@@ -28,9 +28,9 @@ use reth_db_api::mock::{DatabaseMock, TxMock};
 use reth_db_models::{AccountBeforeTx, StoredBlockBodyIndices};
 use reth_ethereum_primitives::EthPrimitives;
 use reth_execution_types::ExecutionOutcome;
-use reth_primitives_traits::{
-    Account, Bytecode, NodePrimitives, RecoveredBlock, SealedHeader, StorageEntry,
-};
+use reth_primitives_traits::{Account, Bytecode, NodePrimitives, RecoveredBlock, SealedHeader};
+#[cfg(feature = "db-api")]
+use reth_primitives_traits::StorageEntry;
 #[cfg(feature = "db-api")]
 use reth_prune_types::PruneModes;
 use reth_prune_types::{PruneCheckpoint, PruneSegment};

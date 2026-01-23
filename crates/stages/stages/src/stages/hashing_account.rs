@@ -173,16 +173,15 @@ where
                 channels.push(rx);
 
                 let chunk = chunk.collect::<Result<Vec<_>, _>>()?;
-                let use_gpu = icicle::should_use_keccak_batch(chunk.len());
                 // Spawn the hashing task onto the global rayon pool
                 rayon::spawn(move || {
-                    if use_gpu {
+                    if icicle::hashing_enabled() {
                         let mut inputs = Vec::with_capacity(chunk.len() * 20);
                         for (address, _) in &chunk {
                             inputs.extend_from_slice(address.key().unwrap().as_ref());
                         }
 
-                        let hashes = icicle::keccak256_batch_fixed_or_cpu(&inputs, 20);
+                        let hashes = icicle::keccak256_batch_fixed_or_cpu_force(&inputs, 20);
                         for ((_, account), hash) in chunk.into_iter().zip(hashes) {
                             let _ = tx.send((RawKey::new(hash), account));
                         }

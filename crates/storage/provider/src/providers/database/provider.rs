@@ -2814,13 +2814,31 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         // Aggregate all block changesets and make a list of accounts that have been changed.
         // Note that collecting and then reversing the order is necessary to ensure that the
         // changes are applied in the correct order.
-        let hashed_accounts = changesets
-            .into_iter()
-            .map(|(_, e)| (keccak256(e.address), e.info))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<BTreeMap<_, _>>();
+        let changesets = changesets.into_iter().collect::<Vec<_>>();
+        let hashed_accounts = if icicle::hashing_enabled() {
+            let mut inputs = Vec::with_capacity(changesets.len() * 20);
+            for (_, entry) in &changesets {
+                inputs.extend_from_slice(entry.address.as_slice());
+            }
+
+            let hashes = icicle::keccak256_batch_fixed_or_cpu_force(&inputs, 20);
+            changesets
+                .into_iter()
+                .zip(hashes)
+                .map(|((_, entry), hash)| (hash, entry.info))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            changesets
+                .into_iter()
+                .map(|(_, e)| (keccak256(e.address), e.info))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<BTreeMap<_, _>>()
+        };
 
         // Apply values to HashedState, and remove the account if it's None.
         let mut hashed_accounts_cursor = self.tx.cursor_write::<tables::HashedAccounts>()?;
@@ -2853,25 +2871,24 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
     ) -> ProviderResult<BTreeMap<B256, Option<Account>>> {
         let mut hashed_accounts_cursor = self.tx.cursor_write::<tables::HashedAccounts>()?;
         let changesets = changesets.into_iter().collect::<Vec<_>>();
-        let hashed_accounts: BTreeMap<B256, Option<Account>> =
-            if icicle::should_use_keccak_batch(changesets.len()) {
-                let mut inputs = Vec::with_capacity(changesets.len() * 20);
-                for (address, _) in &changesets {
-                    inputs.extend_from_slice(address.as_slice());
-                }
+        let hashed_accounts: BTreeMap<B256, Option<Account>> = if icicle::hashing_enabled() {
+            let mut inputs = Vec::with_capacity(changesets.len() * 20);
+            for (address, _) in &changesets {
+                inputs.extend_from_slice(address.as_slice());
+            }
 
-                let hashes = icicle::keccak256_batch_fixed_or_cpu(&inputs, 20);
-                changesets
-                    .into_iter()
-                    .zip(hashes)
-                    .map(|((_, account), hash)| (hash, account))
-                    .collect()
-            } else {
-                changesets
-                    .into_iter()
-                    .map(|(ad, ac)| (keccak256(ad), ac))
-                    .collect()
-            };
+            let hashes = icicle::keccak256_batch_fixed_or_cpu_force(&inputs, 20);
+            changesets
+                .into_iter()
+                .zip(hashes)
+                .map(|((_, account), hash)| (hash, account))
+                .collect()
+        } else {
+            changesets
+                .into_iter()
+                .map(|(ad, ac)| (keccak256(ad), ac))
+                .collect()
+        };
         for (hashed_address, account) in &hashed_accounts {
             if let Some(account) = account {
                 hashed_accounts_cursor.upsert(*hashed_address, account)?;
@@ -2887,12 +2904,32 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         changesets: impl Iterator<Item = (BlockNumberAddress, StorageEntry)>,
     ) -> ProviderResult<HashMap<B256, BTreeSet<B256>>> {
         // Aggregate all block changesets and make list of accounts that have been changed.
-        let mut hashed_storages = changesets
-            .into_iter()
-            .map(|(BlockNumberAddress((_, address)), storage_entry)| {
-                (keccak256(address), keccak256(storage_entry.key), storage_entry.value)
-            })
-            .collect::<Vec<_>>();
+        let changesets = changesets.into_iter().collect::<Vec<_>>();
+        let mut hashed_storages = if icicle::hashing_enabled() {
+            let mut address_inputs = Vec::with_capacity(changesets.len() * 20);
+            let mut key_inputs = Vec::with_capacity(changesets.len() * 32);
+            for (BlockNumberAddress((_, address)), entry) in &changesets {
+                address_inputs.extend_from_slice(address.as_slice());
+                key_inputs.extend_from_slice(entry.key.as_slice());
+            }
+
+            let address_hashes =
+                icicle::keccak256_batch_fixed_or_cpu_force(&address_inputs, 20);
+            let key_hashes = icicle::keccak256_batch_fixed_or_cpu_force(&key_inputs, 32);
+
+            changesets
+                .into_iter()
+                .zip(address_hashes.into_iter().zip(key_hashes))
+                .map(|((_, entry), (addr_hash, key_hash))| (addr_hash, key_hash, entry.value))
+                .collect::<Vec<_>>()
+        } else {
+            changesets
+                .into_iter()
+                .map(|(BlockNumberAddress((_, address)), storage_entry)| {
+                    (keccak256(address), keccak256(storage_entry.key), storage_entry.value)
+                })
+                .collect::<Vec<_>>()
+        };
         hashed_storages.sort_by_key(|(ha, hk, _)| (*ha, *hk));
 
         // Apply values to HashedState, and remove the account if it's None.
@@ -2945,7 +2982,7 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
         }
 
         // hash values
-        let hashed_storages = if icicle::should_use_keccak_batch(flat_entries.len()) {
+        let hashed_storages = if icicle::hashing_enabled() {
             let mut address_inputs = Vec::with_capacity(flat_entries.len() * 20);
             let mut key_inputs = Vec::with_capacity(flat_entries.len() * 32);
             for (address, entry) in &flat_entries {
@@ -2953,8 +2990,9 @@ impl<TX: DbTxMut + DbTx + 'static, N: NodeTypes> HashingWriter for DatabaseProvi
                 key_inputs.extend_from_slice(entry.key.as_slice());
             }
 
-            let address_hashes = icicle::keccak256_batch_fixed_or_cpu(&address_inputs, 20);
-            let key_hashes = icicle::keccak256_batch_fixed_or_cpu(&key_inputs, 32);
+            let address_hashes =
+                icicle::keccak256_batch_fixed_or_cpu_force(&address_inputs, 20);
+            let key_hashes = icicle::keccak256_batch_fixed_or_cpu_force(&key_inputs, 32);
 
             let mut map = BTreeMap::new();
             for ((_, entry), (hashed_address, hashed_key)) in flat_entries

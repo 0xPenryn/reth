@@ -105,25 +105,25 @@ where
                 channels.push(rx);
 
                 let chunk = chunk.collect::<Result<Vec<_>, _>>()?;
-                let use_gpu = icicle::should_use_keccak_batch(chunk.len());
                 // Spawn the hashing task onto the global rayon pool
                 rayon::spawn(move || {
-                    if use_gpu {
+                    if icicle::hashing_enabled() {
+                        let mut address_inputs = Vec::with_capacity(chunk.len() * 20);
                         let mut slot_inputs = Vec::with_capacity(chunk.len() * 32);
-                        for (_, slot) in &chunk {
+                        for (address, slot) in &chunk {
+                            address_inputs.extend_from_slice(address.as_slice());
                             slot_inputs.extend_from_slice(slot.key.as_slice());
                         }
 
-                        let slot_hashes = icicle::keccak256_batch_fixed_or_cpu(&slot_inputs, 32);
-                        // Cache hashed address since PlainStorageState is sorted by address
-                        let (mut last_addr, mut hashed_addr) = (Address::ZERO, HASHED_ZERO_ADDRESS);
-                        for ((address, slot), slot_hash) in chunk.into_iter().zip(slot_hashes) {
-                            if address != last_addr {
-                                last_addr = address;
-                                hashed_addr = keccak256(address);
-                            }
+                        let address_hashes =
+                            icicle::keccak256_batch_fixed_or_cpu_force(&address_inputs, 20);
+                        let slot_hashes =
+                            icicle::keccak256_batch_fixed_or_cpu_force(&slot_inputs, 32);
+                        for ((_, slot), (address_hash, slot_hash)) in
+                            chunk.into_iter().zip(address_hashes.into_iter().zip(slot_hashes))
+                        {
                             let mut addr_key = Vec::with_capacity(64);
-                            addr_key.put_slice(hashed_addr.as_slice());
+                            addr_key.put_slice(address_hash.as_slice());
                             addr_key.put_slice(slot_hash.as_slice());
                             let _ = tx.send((addr_key, CompactU256::from(slot.value)));
                         }
