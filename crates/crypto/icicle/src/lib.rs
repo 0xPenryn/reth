@@ -4,6 +4,8 @@ use alloy_primitives::{keccak256, B256};
 use reth_config::config::{IcicleBackend, IcicleConfig};
 use reth_trie_common::{HashedPostState, HashedStorage, KeccakKeyHasher};
 use revm_database::BundleState;
+#[cfg(feature = "icicle")]
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing::{debug, warn};
 
@@ -257,6 +259,26 @@ fn backend_env_value(backend: IcicleBackend) -> Option<&'static str> {
 }
 
 #[cfg(feature = "icicle")]
+fn normalize_backend_dir(dir: &Path) -> PathBuf {
+    let mut normalized = dir.to_path_buf();
+    loop {
+        let tail = normalized
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase());
+        let strip = matches!(tail.as_deref(), Some("hash") | Some("cuda") | Some("metal"));
+        if strip {
+            if let Some(parent) = normalized.parent() {
+                normalized = parent.to_path_buf();
+                continue;
+            }
+        }
+        break;
+    }
+    normalized
+}
+
+#[cfg(feature = "icicle")]
 fn init_runtime(config: &IcicleConfig) -> Result<(), IcicleError> {
     if let Some(backend) = backend_env_value(config.backend) {
         // SAFETY: We only set env vars before Icicle runtime init; this is process-global and
@@ -272,9 +294,21 @@ fn init_runtime(config: &IcicleConfig) -> Result<(), IcicleError> {
         }
     }
     if let Some(dir) = &config.backend_dir {
+        let normalized = normalize_backend_dir(dir);
+        if normalized != *dir {
+            debug!(
+                target: "reth::icicle",
+                backend_dir = %dir.display(),
+                normalized_dir = %normalized.display(),
+                "Normalized ICICLE_BACKEND_INSTALL_DIR to backend root",
+            );
+        }
         // SAFETY: See above for process-global env var configuration.
         unsafe {
-            std::env::set_var("ICICLE_BACKEND_INSTALL_DIR", dir.to_string_lossy().as_ref());
+            std::env::set_var(
+                "ICICLE_BACKEND_INSTALL_DIR",
+                normalized.to_string_lossy().as_ref(),
+            );
         }
     }
 
