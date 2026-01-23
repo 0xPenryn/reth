@@ -20,10 +20,10 @@ tracing.workspace = true
 thiserror.workspace = true
 
 # Optional Icicle dependencies (GPU backend loaded at runtime)
-icicle-runtime = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-runtime", optional = true }
-icicle-hash = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-hash", optional = true }
-icicle-core = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-core", optional = true }
-icicle-bn254 = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-bn254", default-features = false, features = ["pairing"], optional = true }
+icicle-runtime = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-runtime", optional = true, tag = "v4.0.0" }
+icicle-hash = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-hash", optional = true, tag = "v4.0.0" }
+icicle-core = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-core", optional = true, tag = "v4.0.0" }
+icicle-bn254 = { git = "https://github.com/ingonyama-zk/icicle.git", package = "icicle-bn254", default-features = false, features = ["pairing"], optional = true, tag = "v4.0.0" }
 ark-bn254 = { version = "0.5", default-features = false, features = ["curve"], optional = true }
 ark-ec = { version = "0.5", default-features = false, optional = true }
 ark-ff = { version = "0.5", default-features = false, features = ["asm"], optional = true }
