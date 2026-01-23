@@ -31,6 +31,8 @@ RUN cargo build --profile $BUILD_PROFILE --features "$FEATURES" --bin op-reth --
 RUN ls -la /app/target/$BUILD_PROFILE/op-reth
 RUN cp /app/target/$BUILD_PROFILE/op-reth /app/op-reth
 
+RUN mkdir -p /app/icicle-libs && find /app/target/$BUILD_PROFILE -path '*/deps/icicle/lib/*.so' -type f -exec cp -v {} /app/icicle-libs/ \;
+
 FROM ubuntu AS runtime
 
 RUN apt-get update && \
@@ -39,6 +41,10 @@ RUN apt-get update && \
 
 WORKDIR /app
 COPY --from=builder /app/op-reth /usr/local/bin/
+
+COPY --from=builder /app/icicle-libs /usr/local/lib/icicle
+ENV LD_LIBRARY_PATH=/usr/local/lib/icicle:${LD_LIBRARY_PATH}
+
 RUN chmod +x /usr/local/bin/op-reth
 COPY LICENSE-* ./
 
