@@ -5,7 +5,7 @@ use reth_config::config::{IcicleBackend, IcicleConfig};
 use reth_trie_common::{HashedPostState, HashedStorage, KeccakKeyHasher};
 use revm_database::BundleState;
 use std::sync::OnceLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Icicle helper error wrapper.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +46,12 @@ pub fn init(config: &IcicleConfig) -> bool {
         return state.available;
     }
 
+    info!(
+        target: "reth::icicle",
+        backend = ?config.backend,
+        device = config.device,
+        "Icicle enabled",
+    );
     let state = match init_runtime(config) {
         Ok(()) => {
             debug!(target: "reth::icicle", backend = ?config.backend, device = ?config.device, "Icicle runtime initialized");
@@ -264,12 +270,14 @@ fn init_runtime(config: &IcicleConfig) -> Result<(), IcicleError> {
         unsafe {
             std::env::set_var("ICICLE_BACKEND", backend);
         }
+        info!(target: "reth::icicle", backend = backend, "Icicle backend selected");
     }
     if let Some(device) = config.device {
         // SAFETY: See above for process-global env var configuration.
         unsafe {
             std::env::set_var("ICICLE_DEVICE", device.to_string());
         }
+        info!(target: "reth::icicle", device, "Icicle device selected");
     }
     if let Some(dir) = &config.backend_dir {
         // SAFETY: See above for process-global env var configuration.
@@ -308,6 +316,12 @@ fn keccak256_batch_fixed_gpu(inputs: &[u8], item_len: usize) -> Result<Vec<B256>
     let config = HashConfig::default();
 
     let hasher = Keccak256::new(0).map_err(|err| IcicleError(format!("{err:?}")))?;
+    info!(
+        target: "reth::icicle",
+        batch,
+        item_len,
+        "Using Icicle GPU for Keccak-256 batch",
+    );
     hasher
         .hash(
             HostSlice::from_slice(inputs),
@@ -486,6 +500,7 @@ mod bn254 {
     }
 
     pub(super) fn g1_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; G1_LEN], Bn254Error> {
+        tracing::info!(target: "reth::icicle", "Using Icicle GPU for BN254 G1 add");
         let p1 = read_g1_point(p1_bytes)?;
         let p2 = read_g1_point(p2_bytes)?;
 
@@ -497,6 +512,7 @@ mod bn254 {
     }
 
     pub(super) fn g1_mul(point_bytes: &[u8], scalar_bytes: &[u8]) -> Result<[u8; G1_LEN], Bn254Error> {
+        tracing::info!(target: "reth::icicle", "Using Icicle GPU for BN254 G1 mul");
         let point = read_g1_point(point_bytes)?;
         let scalar = read_scalar(scalar_bytes);
 
@@ -506,6 +522,11 @@ mod bn254 {
     }
 
     pub(super) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, Bn254Error> {
+        tracing::info!(
+            target: "reth::icicle",
+            pairs = pairs.len(),
+            "Using Icicle GPU for BN254 pairing check",
+        );
         let mut acc = PairingTargetField::one();
         let mut any = false;
 
