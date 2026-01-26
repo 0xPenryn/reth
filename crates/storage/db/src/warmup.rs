@@ -49,7 +49,8 @@ pub struct WarmupStats {
     pub skipped_tables: Vec<String>,
 }
 
-const MAX_READERS_PER_TABLE: usize = 64;
+const MAX_READERS_PER_TABLE: usize = 1024;
+const TARGET_TASK_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_TABLE_SIZE_ESTIMATE: usize = 1;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -76,64 +77,63 @@ enum KeySpace {
 
 #[derive(Debug, Clone, Copy)]
 struct KeyRange {
-    key_space: KeySpace,
     start: Option<KeyBoundary>,
     end: Option<KeyBoundary>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum KeyBoundary {
+    BytePrefix { prefix_len: u8, value: u32 },
+    Integer(u64),
+}
+
 impl KeyRange {
-    const fn entire(key_space: KeySpace) -> Self {
-        Self { key_space, start: None, end: None }
+    fn entire(key_space: KeySpace) -> Self {
+        match key_space {
+            KeySpace::Bytes => Self { start: None, end: None },
+            KeySpace::Integer => Self { start: None, end: None },
+        }
     }
 
-    fn segmented(key_space: KeySpace, segment_index: usize, total_segments: usize) -> Self {
-        match key_space {
-            KeySpace::Integer => {
-                let (start, end) = integer_segment_bounds(segment_index, total_segments);
-                Self {
-                    key_space,
-                    start: start.map(KeyBoundary::Integer),
-                    end: end.map(KeyBoundary::Integer),
-                }
-            }
-            KeySpace::Bytes => {
-                let (start, end) = byte_segment_bounds(segment_index, total_segments);
-                Self {
-                    key_space,
-                    start: start.map(KeyBoundary::Byte),
-                    end: end.map(KeyBoundary::Byte),
-                }
-            }
+    fn segmented_bytes(segment_index: usize, total_segments: usize, prefix_len: u8) -> Self {
+        let (start, end) = byte_segment_bounds(segment_index, total_segments, prefix_len);
+        Self {
+            start: start.map(|value| KeyBoundary::BytePrefix { prefix_len, value }),
+            end: end.map(|value| KeyBoundary::BytePrefix { prefix_len, value }),
+        }
+    }
+
+    fn segmented_integer(segment_index: usize, total_segments: usize) -> Self {
+        let (start, end) = integer_segment_bounds(segment_index, total_segments);
+        Self {
+            start: start.map(KeyBoundary::Integer),
+            end: end.map(KeyBoundary::Integer),
         }
     }
 
     fn start_key_bytes(&self) -> Option<Vec<u8>> {
         match self.start {
-            Some(KeyBoundary::Byte(b)) => Some(vec![b]),
+            Some(KeyBoundary::BytePrefix { prefix_len, value }) => {
+                Some(byte_prefix_bytes(value, prefix_len))
+            }
             Some(KeyBoundary::Integer(i)) => Some(i.to_ne_bytes().to_vec()),
             None => None,
         }
     }
 
     fn should_stop(&self, key: &[u8]) -> bool {
-        match (self.key_space, self.end) {
-            (KeySpace::Bytes, Some(KeyBoundary::Byte(end_byte))) => {
-                let first = key.first().copied().unwrap_or(0);
-                first >= end_byte
+        match self.end {
+            Some(KeyBoundary::BytePrefix { prefix_len, value }) => {
+                let current = read_prefix(key, prefix_len);
+                current >= value
             }
-            (KeySpace::Integer, Some(KeyBoundary::Integer(end_val))) => {
+            Some(KeyBoundary::Integer(end_val)) => {
                 let current = decode_integer_key(key);
                 current >= end_val
             }
-            _ => false,
+            None => false,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum KeyBoundary {
-    Byte(u8),
-    Integer(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -216,7 +216,7 @@ pub fn warmup_database(
     }
 
     // Determine optimal thread count (2x CPU cores as requested)
-    let num_threads = (num_cpus::get() * 2).max(1);
+    let num_threads = (num_cpus::get() * 4).max(1);
     info!(
         target: "reth::db::warmup",
         num_threads = num_threads,
@@ -428,12 +428,33 @@ fn build_warmup_plan(
         let meta = metadata.get(table);
         let size = meta.map(|m| m.size_bytes).unwrap_or(DEFAULT_TABLE_SIZE_ESTIMATE);
         let key_space = meta.map(|m| m.key_space()).unwrap_or(KeySpace::Bytes);
-        let mut segments = ((size as f64 / total_size as f64) * worker_hint as f64).ceil() as usize;
-        segments = segments.clamp(1, MAX_READERS_PER_TABLE).min(worker_hint);
+        let segments_by_threads =
+            ((size as f64 / total_size as f64) * worker_hint as f64).ceil() as usize;
+        let segments_by_size = (size + TARGET_TASK_BYTES - 1) / TARGET_TASK_BYTES;
+        let mut segments = segments_by_threads.max(segments_by_size).max(1);
+        segments = segments.min(MAX_READERS_PER_TABLE);
+
+        let prefix_len = match key_space {
+            KeySpace::Bytes => {
+                if segments > 256 {
+                    let max_segments = 256usize * 256usize;
+                    if segments > max_segments {
+                        segments = max_segments;
+                    }
+                    2
+                } else {
+                    1
+                }
+            }
+            KeySpace::Integer => 0,
+        };
         segments_per_table.insert(table.clone(), segments);
 
         for segment_index in 0..segments {
-            let range = KeyRange::segmented(key_space, segment_index, segments);
+            let range = match key_space {
+                KeySpace::Bytes => KeyRange::segmented_bytes(segment_index, segments, prefix_len),
+                KeySpace::Integer => KeyRange::segmented_integer(segment_index, segments),
+            };
             tasks.push(WarmupTask {
                 table_name: table.clone(),
                 range,
@@ -463,12 +484,16 @@ fn table_has_failed(failed: &Mutex<HashSet<String>>, table: &str) -> bool {
     guard.contains(table)
 }
 
-fn byte_segment_bounds(index: usize, segments: usize) -> (Option<u8>, Option<u8>) {
-    const BYTE_SPACE: usize = 256;
-    let start_bucket = (index * BYTE_SPACE) / segments;
-    let end_bucket = ((index + 1) * BYTE_SPACE) / segments;
-    let start = if start_bucket == 0 { None } else { Some(start_bucket as u8) };
-    let end = if end_bucket >= BYTE_SPACE { None } else { Some(end_bucket as u8) };
+fn byte_segment_bounds(
+    index: usize,
+    segments: usize,
+    prefix_len: u8,
+) -> (Option<u32>, Option<u32>) {
+    let buckets = 1usize << (8 * prefix_len as usize);
+    let start_bucket = (index * buckets) / segments;
+    let end_bucket = ((index + 1) * buckets) / segments;
+    let start = if start_bucket == 0 { None } else { Some(start_bucket as u32) };
+    let end = if end_bucket >= buckets { None } else { Some(end_bucket as u32) };
     (start, end)
 }
 
@@ -486,6 +511,23 @@ fn decode_integer_key(bytes: &[u8]) -> u64 {
     let copy_len = bytes.len().min(8);
     buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
     u64::from_ne_bytes(buf)
+}
+
+fn read_prefix(bytes: &[u8], prefix_len: u8) -> u32 {
+    let mut value = 0u32;
+    for idx in 0..prefix_len as usize {
+        value <<= 8;
+        if let Some(b) = bytes.get(idx) {
+            value |= *b as u32;
+        }
+    }
+    value
+}
+
+fn byte_prefix_bytes(value: u32, prefix_len: u8) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let len = prefix_len as usize;
+    bytes[4 - len..].to_vec()
 }
 
 /// Returns the list of tables to warm based on the mode.
