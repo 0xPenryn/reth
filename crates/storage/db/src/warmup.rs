@@ -10,10 +10,9 @@ use crate::{
 };
 use reth_db_api::{
     database::Database,
-    table::{DupSort, Table},
     transaction::DbTx,
 };
-use reth_libmdbx::{ffi, flags::DatabaseFlags};
+use reth_libmdbx::{ffi, DatabaseFlags};
 use reth_tracing::tracing::{debug, info, warn};
 use std::{
     borrow::Cow,
@@ -551,11 +550,10 @@ fn get_table_size_by_name(
     // Get table stats to calculate size
     let table_db =
         tx.inner.open_db(Some(table_name)).map_err(|e| crate::DatabaseError::Open(e.into()))?;
-    let stats = tx.inner.db_stat(&table_db).map_err(|e| crate::DatabaseError::Stats(e.into()))?;
-    let flags = tx
-        .inner
-        .db_flags(&table_db)
-        .map_err(|e| crate::DatabaseError::Other(format!("failed to fetch db flags: {e}")))?;
+    let dbi = table_db.dbi();
+    let stats = tx.inner.db_stat(dbi).map_err(|e| crate::DatabaseError::Stats(e.into()))?;
+    let flags =
+        tx.inner.db_flags(dbi).map_err(|e| crate::DatabaseError::Other(format!("failed to fetch db flags: {e}")))?;
 
     let page_size = stats.page_size() as usize;
     let leaf_pages = stats.leaf_pages();
@@ -573,7 +571,7 @@ fn warmup_table_with_range(
     table_name: &str,
     range: KeyRange,
 ) -> Result<usize, crate::DatabaseError> {
-    let mut tx = db.tx()?;
+    let tx = db.tx()?;
     let result = warmup_table_by_name_optimized(&tx, table_name, range)?;
     tx.commit()?;
     Ok(result)
