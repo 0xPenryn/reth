@@ -5,6 +5,11 @@ use reth_config::config::{IcicleBackend, IcicleConfig};
 use reth_trie_common::{HashedPostState, HashedStorage, KeccakKeyHasher};
 use revm_database::BundleState;
 use std::sync::OnceLock;
+#[cfg(feature = "icicle")]
+use std::{
+    sync::{atomic::AtomicU64, atomic::Ordering, Mutex},
+    time::{Duration, Instant},
+};
 use tracing::{debug, info, warn};
 
 /// Icicle helper error wrapper.
@@ -33,6 +38,136 @@ struct IcicleState {
 }
 
 static ICICLE_STATE: OnceLock<IcicleState> = OnceLock::new();
+#[cfg(feature = "icicle")]
+static ICICLE_STATS: OnceLock<IcicleStats> = OnceLock::new();
+
+#[cfg(feature = "icicle")]
+const ICICLE_STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
+
+#[cfg(feature = "icicle")]
+#[derive(Debug, Clone, Copy)]
+enum IcicleCallKind {
+    Hash,
+    Bn254,
+}
+
+#[cfg(feature = "icicle")]
+#[derive(Debug)]
+struct IcicleSnapshot {
+    total_calls: u64,
+    total_ns: u64,
+    hash_calls: u64,
+    hash_ns: u64,
+    bn254_calls: u64,
+    bn254_ns: u64,
+}
+
+#[cfg(feature = "icicle")]
+#[derive(Debug)]
+struct IcicleStats {
+    start: Instant,
+    last_log_ns: AtomicU64,
+    total_calls: AtomicU64,
+    total_ns: AtomicU64,
+    hash_calls: AtomicU64,
+    hash_ns: AtomicU64,
+    bn254_calls: AtomicU64,
+    bn254_ns: AtomicU64,
+    snapshot: Mutex<IcicleSnapshot>,
+}
+
+#[cfg(feature = "icicle")]
+impl IcicleStats {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            last_log_ns: AtomicU64::new(0),
+            total_calls: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            hash_calls: AtomicU64::new(0),
+            hash_ns: AtomicU64::new(0),
+            bn254_calls: AtomicU64::new(0),
+            bn254_ns: AtomicU64::new(0),
+            snapshot: Mutex::new(IcicleSnapshot {
+                total_calls: 0,
+                total_ns: 0,
+                hash_calls: 0,
+                hash_ns: 0,
+                bn254_calls: 0,
+                bn254_ns: 0,
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "icicle")]
+fn record_icicle_call(kind: IcicleCallKind, elapsed: Duration) {
+    let stats = ICICLE_STATS.get_or_init(IcicleStats::new);
+    let elapsed_ns = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+
+    stats.total_calls.fetch_add(1, Ordering::Relaxed);
+    stats.total_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+    match kind {
+        IcicleCallKind::Hash => {
+            stats.hash_calls.fetch_add(1, Ordering::Relaxed);
+            stats.hash_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+        }
+        IcicleCallKind::Bn254 => {
+            stats.bn254_calls.fetch_add(1, Ordering::Relaxed);
+            stats.bn254_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+        }
+    }
+
+    let now_ns = stats.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    let last_ns = stats.last_log_ns.load(Ordering::Relaxed);
+    if now_ns.saturating_sub(last_ns) < ICICLE_STATS_LOG_INTERVAL.as_nanos() as u64 {
+        return;
+    }
+
+    if stats
+        .last_log_ns
+        .compare_exchange(last_ns, now_ns, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let totals = IcicleSnapshot {
+        total_calls: stats.total_calls.load(Ordering::Relaxed),
+        total_ns: stats.total_ns.load(Ordering::Relaxed),
+        hash_calls: stats.hash_calls.load(Ordering::Relaxed),
+        hash_ns: stats.hash_ns.load(Ordering::Relaxed),
+        bn254_calls: stats.bn254_calls.load(Ordering::Relaxed),
+        bn254_ns: stats.bn254_ns.load(Ordering::Relaxed),
+    };
+
+    let mut snapshot = stats.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let delta = IcicleSnapshot {
+        total_calls: totals.total_calls.saturating_sub(snapshot.total_calls),
+        total_ns: totals.total_ns.saturating_sub(snapshot.total_ns),
+        hash_calls: totals.hash_calls.saturating_sub(snapshot.hash_calls),
+        hash_ns: totals.hash_ns.saturating_sub(snapshot.hash_ns),
+        bn254_calls: totals.bn254_calls.saturating_sub(snapshot.bn254_calls),
+        bn254_ns: totals.bn254_ns.saturating_sub(snapshot.bn254_ns),
+    };
+    *snapshot = totals;
+
+    if delta.total_calls == 0 {
+        return;
+    }
+
+    info!(
+        target: "reth::icicle",
+        interval_ms = ICICLE_STATS_LOG_INTERVAL.as_millis() as u64,
+        total_calls = delta.total_calls,
+        total_ms = delta.total_ns / 1_000_000,
+        hash_calls = delta.hash_calls,
+        hash_ms = delta.hash_ns / 1_000_000,
+        bn254_calls = delta.bn254_calls,
+        bn254_ms = delta.bn254_ns / 1_000_000,
+        "Icicle usage summary",
+    );
+}
 
 /// Initialize the Icicle runtime if enabled in config.
 ///
@@ -316,12 +451,7 @@ fn keccak256_batch_fixed_gpu(inputs: &[u8], item_len: usize) -> Result<Vec<B256>
     let config = HashConfig::default();
 
     let hasher = Keccak256::new(0).map_err(|err| IcicleError(format!("{err:?}")))?;
-    info!(
-        target: "reth::icicle",
-        batch,
-        item_len,
-        "Using Icicle GPU for Keccak-256 batch",
-    );
+    let started = Instant::now();
     hasher
         .hash(
             HostSlice::from_slice(inputs),
@@ -329,6 +459,7 @@ fn keccak256_batch_fixed_gpu(inputs: &[u8], item_len: usize) -> Result<Vec<B256>
             HostSlice::from_mut_slice(&mut output),
         )
         .map_err(|err| IcicleError(format!("{err:?}")))?;
+    record_icicle_call(IcicleCallKind::Hash, started.elapsed());
 
     Ok(output.chunks_exact(32).map(B256::from_slice).collect())
 }
@@ -340,7 +471,7 @@ fn keccak256_batch_fixed_gpu(_inputs: &[u8], _item_len: usize) -> Result<Vec<B25
 
 #[cfg(feature = "icicle")]
 mod bn254 {
-    use super::Bn254Error;
+    use super::{Bn254Error, IcicleCallKind, record_icicle_call};
     use ark_bn254::{Fq, Fq2, G1Affine as ArkG1Affine, G2Affine as ArkG2Affine};
     use ark_ec::AffineRepr;
     use ark_ff::{BigInteger, PrimeField, Zero};
@@ -351,6 +482,7 @@ mod bn254 {
     use icicle_bn254::pairing::PairingTargetField;
     use icicle_core::{affine::Affine, bignum::BigNum};
     use icicle_core::pairing::pairing as icicle_pairing;
+    use std::time::Instant;
 
     const FQ_LEN: usize = 32;
     const SCALAR_LEN: usize = 32;
@@ -500,33 +632,30 @@ mod bn254 {
     }
 
     pub(super) fn g1_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; G1_LEN], Bn254Error> {
-        tracing::info!(target: "reth::icicle", "Using Icicle GPU for BN254 G1 add");
         let p1 = read_g1_point(p1_bytes)?;
         let p2 = read_g1_point(p2_bytes)?;
 
         let p1_icicle = ark_g1_to_icicle(&p1);
         let p2_icicle = ark_g1_to_icicle(&p2);
 
+        let started = Instant::now();
         let result = G1Projective::from(p1_icicle) + G1Projective::from(p2_icicle);
+        record_icicle_call(IcicleCallKind::Bn254, started.elapsed());
         Ok(encode_g1_point(result.into()))
     }
 
     pub(super) fn g1_mul(point_bytes: &[u8], scalar_bytes: &[u8]) -> Result<[u8; G1_LEN], Bn254Error> {
-        tracing::info!(target: "reth::icicle", "Using Icicle GPU for BN254 G1 mul");
         let point = read_g1_point(point_bytes)?;
         let scalar = read_scalar(scalar_bytes);
 
         let point_icicle = ark_g1_to_icicle(&point);
+        let started = Instant::now();
         let result = G1Projective::from(point_icicle) * scalar;
+        record_icicle_call(IcicleCallKind::Bn254, started.elapsed());
         Ok(encode_g1_point(result.into()))
     }
 
     pub(super) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, Bn254Error> {
-        tracing::info!(
-            target: "reth::icicle",
-            pairs = pairs.len(),
-            "Using Icicle GPU for BN254 pairing check",
-        );
         let mut acc = PairingTargetField::one();
         let mut any = false;
 
@@ -542,11 +671,13 @@ mod bn254 {
             let g1_icicle = ark_g1_to_icicle(&g1);
             let g2_icicle = ark_g2_to_icicle(&g2);
 
+            let started = Instant::now();
             let gt = icicle_pairing::<G1Projective, G2Projective, PairingTargetField>(
                 &g1_icicle,
                 &g2_icicle,
             )
             .map_err(|err| Bn254Error::Backend(format!("{err:?}")))?;
+            record_icicle_call(IcicleCallKind::Bn254, started.elapsed());
 
             acc = acc * gt;
         }
