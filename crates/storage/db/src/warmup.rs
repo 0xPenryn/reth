@@ -494,14 +494,22 @@ fn get_tables_for_mode(mode: WarmupMode) -> Vec<String> {
         WarmupMode::None => vec![],
         WarmupMode::State => vec![
             "PlainAccountState".to_string(),
-            "PlainStorageState".to_string(),
+            // "PlainStorageState".to_string(),
             "Bytecodes".to_string(),
+            "HashedAccounts".to_string(),
+            "HashedStorages".to_string(),
+            "StoragesTrie".to_string(),
+            "AccountsTrie".to_string(),
         ],
         WarmupMode::Execution => vec![
             // State tables (highest priority)
             "PlainAccountState".to_string(),
-            "PlainStorageState".to_string(),
+            // "PlainStorageState".to_string(),
             "Bytecodes".to_string(),
+            "HashedAccounts".to_string(),
+            "HashedStorages".to_string(),
+            "StoragesTrie".to_string(),
+            "AccountsTrie".to_string(),
             // Block data tables
             "Headers".to_string(),
             "CanonicalHeaders".to_string(),
