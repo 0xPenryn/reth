@@ -55,12 +55,12 @@ const DEFAULT_TABLE_SIZE_ESTIMATE: usize = 1;
 #[derive(Debug, Clone, Copy, Default)]
 struct TableWarmupMetadata {
     size_bytes: usize,
-    flags: DatabaseFlags,
+    integer_key: bool,
 }
 
 impl TableWarmupMetadata {
     fn key_space(&self) -> KeySpace {
-        if self.flags.contains(DatabaseFlags::INTEGER_KEY) {
+        if self.integer_key {
             KeySpace::Integer
         } else {
             KeySpace::Bytes
@@ -520,12 +520,14 @@ fn get_table_metadata(
 ) -> Result<HashMap<String, TableWarmupMetadata>, crate::DatabaseError> {
     let mut metadata = HashMap::new();
 
-    let mut tx = db.tx()?;
+    let tx = db.tx()?;
     for table_name in table_names {
         match get_table_size_by_name(&tx, table_name) {
-            Ok((size, flags)) => {
-                metadata
-                    .insert(table_name.clone(), TableWarmupMetadata { size_bytes: size, flags });
+            Ok((size, integer_key)) => {
+                metadata.insert(
+                    table_name.clone(),
+                    TableWarmupMetadata { size_bytes: size, integer_key },
+                );
             }
             Err(e) => {
                 warn!(
@@ -546,7 +548,7 @@ fn get_table_metadata(
 fn get_table_size_by_name(
     tx: &<DatabaseEnv as Database>::TX,
     table_name: &str,
-) -> Result<(usize, DatabaseFlags), crate::DatabaseError> {
+) -> Result<(usize, bool), crate::DatabaseError> {
     // Get table stats to calculate size
     let table_db =
         tx.inner.open_db(Some(table_name)).map_err(|e| crate::DatabaseError::Open(e.into()))?;
@@ -554,6 +556,7 @@ fn get_table_size_by_name(
     let stats = tx.inner.db_stat(dbi).map_err(|e| crate::DatabaseError::Stats(e.into()))?;
     let flags =
         tx.inner.db_flags(dbi).map_err(|e| crate::DatabaseError::Other(format!("failed to fetch db flags: {e}")))?;
+    let integer_key = flags.contains(DatabaseFlags::INTEGER_KEY);
 
     let page_size = stats.page_size() as usize;
     let leaf_pages = stats.leaf_pages();
@@ -562,7 +565,7 @@ fn get_table_size_by_name(
     let num_pages = leaf_pages + branch_pages + overflow_pages;
     let table_size = page_size * num_pages;
 
-    Ok((table_size, flags))
+    Ok((table_size, integer_key))
 }
 
 /// Warms up a specific table using optimized sequential access patterns.
