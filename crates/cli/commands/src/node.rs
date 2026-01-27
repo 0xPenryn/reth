@@ -229,18 +229,26 @@ where
                     }
                 };
                 
-                tracing::info!(
-                    target: "reth::cli",
-                    mode = ?warmup_mode,
-                    "Pre-warming database tables"
-                );
-                if let Err(e) = warmup_database(&database, db_warmup_mode, self.db.warmup_memory_limit) {
-                    tracing::warn!(
+                let warmup_db = database.clone();
+                let warmup_memory_limit = self.db.warmup_memory_limit;
+                let task_executor = ctx.task_executor.clone();
+
+                task_executor.spawn_blocking(async move {
+                    tracing::info!(
                         target: "reth::cli",
-                        error = ?e,
-                        "Failed to pre-warm database tables, continuing anyway"
+                        mode = ?warmup_mode,
+                        "Pre-warming database tables in background"
                     );
-                }
+                    if let Err(e) =
+                        warmup_database(&warmup_db, db_warmup_mode, warmup_memory_limit)
+                    {
+                        tracing::warn!(
+                            target: "reth::cli",
+                            error = ?e,
+                            "Failed to pre-warm database tables, continuing anyway"
+                        );
+                    }
+                });
             }
         }
 
