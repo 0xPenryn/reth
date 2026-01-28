@@ -40,7 +40,7 @@ pub const DEFAULT_MULTIPROOF_TASK_CHUNK_SIZE: usize = 60;
 pub const DEFAULT_RESERVED_CPU_CORES: usize = 1;
 
 /// Default maximum concurrency for prewarm task.
-pub const DEFAULT_PREWARM_MAX_CONCURRENCY: usize = 16;
+pub const DEFAULT_PREWARM_MAX_CONCURRENCY: usize = 64;
 
 const DEFAULT_BLOCK_BUFFER_LIMIT: u32 = EPOCH_SLOTS as u32 * 2;
 const DEFAULT_MAX_INVALID_HEADER_CACHE_LENGTH: u32 = 256;
