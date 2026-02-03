@@ -13,7 +13,10 @@ use reth_trie::{
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
 };
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -58,6 +61,48 @@ impl AtomicDuration {
     }
 }
 
+/// A handle to the total latency metrics for an [`InstrumentedStateProvider`].
+#[derive(Debug, Clone)]
+pub(crate) struct StateProviderLatencyHandle {
+    total_storage_fetch_latency: Arc<AtomicDuration>,
+    total_code_fetch_latency: Arc<AtomicDuration>,
+    total_account_fetch_latency: Arc<AtomicDuration>,
+}
+
+impl Default for StateProviderLatencyHandle {
+    fn default() -> Self {
+        Self {
+            total_storage_fetch_latency: Arc::new(AtomicDuration::zero()),
+            total_code_fetch_latency: Arc::new(AtomicDuration::zero()),
+            total_account_fetch_latency: Arc::new(AtomicDuration::zero()),
+        }
+    }
+}
+
+impl StateProviderLatencyHandle {
+    /// Returns the total time spent fetching storage.
+    pub(crate) fn total_storage_fetch_latency(&self) -> Duration {
+        self.total_storage_fetch_latency.duration()
+    }
+
+    /// Returns the total time spent fetching code.
+    pub(crate) fn total_code_fetch_latency(&self) -> Duration {
+        self.total_code_fetch_latency.duration()
+    }
+
+    /// Returns the total time spent fetching accounts.
+    pub(crate) fn total_account_fetch_latency(&self) -> Duration {
+        self.total_account_fetch_latency.duration()
+    }
+
+    /// Returns the total time spent fetching state across all categories.
+    pub(crate) fn total_fetch_latency(&self) -> Duration {
+        self.total_storage_fetch_latency()
+            + self.total_code_fetch_latency()
+            + self.total_account_fetch_latency()
+    }
+}
+
 /// A wrapper of a state provider and latency metrics.
 #[derive(Debug)]
 pub struct InstrumentedStateProvider<S> {
@@ -68,13 +113,13 @@ pub struct InstrumentedStateProvider<S> {
     metrics: StateProviderMetrics,
 
     /// The total time we spend fetching storage over the lifetime of this state provider
-    total_storage_fetch_latency: AtomicDuration,
+    total_storage_fetch_latency: Arc<AtomicDuration>,
 
     /// The total time we spend fetching code over the lifetime of this state provider
-    total_code_fetch_latency: AtomicDuration,
+    total_code_fetch_latency: Arc<AtomicDuration>,
 
     /// The total time we spend fetching accounts over the lifetime of this state provider
-    total_account_fetch_latency: AtomicDuration,
+    total_account_fetch_latency: Arc<AtomicDuration>,
 }
 
 impl<S> InstrumentedStateProvider<S>
@@ -84,12 +129,21 @@ where
     /// Creates a new [`InstrumentedStateProvider`] from a state provider with the provided label
     /// for metrics.
     pub fn new(state_provider: S, source: &'static str) -> Self {
+        Self::new_with_handle(state_provider, source, StateProviderLatencyHandle::default())
+    }
+
+    /// Creates a new [`InstrumentedStateProvider`] using an external latency handle.
+    pub(crate) fn new_with_handle(
+        state_provider: S,
+        source: &'static str,
+        handle: StateProviderLatencyHandle,
+    ) -> Self {
         Self {
             state_provider,
             metrics: StateProviderMetrics::new_with_labels(&[("source", source)]),
-            total_storage_fetch_latency: AtomicDuration::zero(),
-            total_code_fetch_latency: AtomicDuration::zero(),
-            total_account_fetch_latency: AtomicDuration::zero(),
+            total_storage_fetch_latency: handle.total_storage_fetch_latency,
+            total_code_fetch_latency: handle.total_code_fetch_latency,
+            total_account_fetch_latency: handle.total_account_fetch_latency,
         }
     }
 }

@@ -122,6 +122,8 @@ where
     disable_transaction_prewarming: bool,
     /// Whether state cache should be disable
     disable_state_cache: bool,
+    /// Whether to enable state provider latency metrics.
+    state_provider_metrics: bool,
     /// Determines how to configure the evm for execution.
     evm_config: Evm,
     /// Whether precompile cache should be disabled.
@@ -166,6 +168,7 @@ where
             disable_transaction_prewarming: config.disable_prewarming(),
             evm_config,
             disable_state_cache: config.disable_state_cache(),
+            state_provider_metrics: config.state_provider_metrics(),
             precompile_cache_disabled: config.precompile_cache_disabled(),
             precompile_cache_map,
             sparse_state_trie: Arc::default(),
@@ -435,6 +438,7 @@ where
             provider: provider_builder,
             metrics: PrewarmMetrics::default(),
             terminate_execution: Arc::new(AtomicBool::new(false)),
+            state_provider_metrics: self.state_provider_metrics,
             precompile_cache_disabled: self.precompile_cache_disabled,
             precompile_cache_map: self.precompile_cache_map.clone(),
         };

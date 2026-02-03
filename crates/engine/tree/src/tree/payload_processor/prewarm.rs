@@ -13,6 +13,7 @@
 
 use crate::tree::{
     cached_state::{CachedStateProvider, SavedCache},
+    instrumented_state::{InstrumentedStateProvider, StateProviderLatencyHandle},
     payload_processor::{
         bal::{total_slots, BALSlotIter},
         executor::WorkloadExecutor,
@@ -45,9 +46,13 @@ use std::{
         mpsc::{self, channel, Receiver, Sender},
         Arc,
     },
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tracing::{debug, debug_span, instrument, trace, warn, Span};
+
+fn unix_millis(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or(0)
+}
 
 /// Determines the prewarming mode: transaction-based or BAL-based.
 pub(super) enum PrewarmMode<Tx> {
@@ -481,6 +486,8 @@ where
     pub(super) metrics: PrewarmMetrics,
     /// An atomic bool that tells prewarm tasks to not start any more execution.
     pub(super) terminate_execution: Arc<AtomicBool>,
+    /// Whether to enable state provider latency metrics during prewarming.
+    pub(super) state_provider_metrics: bool,
     pub(super) precompile_cache_disabled: bool,
     pub(super) precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
 }
@@ -494,7 +501,14 @@ where
     /// Splits this context into an evm, an evm config, metrics, and the atomic bool for terminating
     /// execution.
     #[instrument(level = "debug", target = "engine::tree::payload_processor::prewarm", skip_all)]
-    fn evm_for_ctx(self) -> Option<(EvmFor<Evm, impl Database>, PrewarmMetrics, Arc<AtomicBool>)> {
+    fn evm_for_ctx(
+        self,
+    ) -> Option<(
+        EvmFor<Evm, impl Database>,
+        PrewarmMetrics,
+        Arc<AtomicBool>,
+        Option<StateProviderLatencyHandle>,
+    )> {
         let Self {
             env,
             evm_config,
@@ -502,11 +516,12 @@ where
             provider,
             metrics,
             terminate_execution,
+            state_provider_metrics,
             precompile_cache_disabled,
             precompile_cache_map,
         } = self;
 
-        let mut state_provider = match provider.build() {
+        let mut state_provider: Box<dyn StateProvider> = match provider.build() {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -516,6 +531,20 @@ where
                 );
                 return None
             }
+        };
+
+        let enable_io_timing = state_provider_metrics ||
+            tracing::enabled!(target: "engine::tree::prewarm", level = tracing::Level::DEBUG);
+        let io_handle = if enable_io_timing {
+            let handle = StateProviderLatencyHandle::default();
+            state_provider = Box::new(InstrumentedStateProvider::new_with_handle(
+                state_provider,
+                "prewarm",
+                handle.clone(),
+            ));
+            Some(handle)
+        } else {
+            None
         };
 
         // Use the caches to create a new provider with caching
@@ -553,7 +582,7 @@ where
             });
         }
 
-        Some((evm, metrics, terminate_execution))
+        Some((evm, metrics, terminate_execution, io_handle))
     }
 
     /// Accepts an [`mpsc::Receiver`] of transactions and a handle to prewarm task. Executes
@@ -568,19 +597,34 @@ where
     #[instrument(level = "debug", target = "engine::tree::payload_processor::prewarm", skip_all)]
     fn transact_batch<Tx>(
         self,
+        worker_idx: usize,
         txs: mpsc::Receiver<IndexedTransaction<Tx>>,
         sender: Sender<PrewarmTaskEvent<N::Receipt>>,
         done_tx: Sender<()>,
     ) where
         Tx: ExecutableTxFor<Evm>,
     {
-        let Some((mut evm, metrics, terminate_execution)) = self.evm_for_ctx() else { return };
+        let Some((mut evm, metrics, terminate_execution, io_handle)) = self.evm_for_ctx() else {
+            return
+        };
+
+        let task_start = Instant::now();
+        let task_start_unix_ms = unix_millis(SystemTime::now());
+        let mut executed_transactions = 0usize;
+
+        debug!(
+            target: "engine::tree::prewarm",
+            worker_idx,
+            start_unix_ms = task_start_unix_ms,
+            "Prewarm worker started"
+        );
 
         while let Ok(IndexedTransaction { index, tx }) = {
             let _enter = debug_span!(target: "engine::tree::payload_processor::prewarm", "recv tx")
                 .entered();
             txs.recv()
         } {
+            executed_transactions += 1;
             let enter = debug_span!(
                 target: "engine::tree::payload_processor::prewarm",
                 "prewarm tx",
@@ -646,6 +690,41 @@ where
             metrics.total_runtime.record(start.elapsed());
         }
 
+        let task_duration = task_start.elapsed();
+        let task_end_unix_ms = unix_millis(SystemTime::now());
+        let io_storage = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_storage_fetch_latency)
+            .unwrap_or_default();
+        let io_code = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_code_fetch_latency)
+            .unwrap_or_default();
+        let io_account = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_account_fetch_latency)
+            .unwrap_or_default();
+        let io_total = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_fetch_latency)
+            .unwrap_or_default();
+        let cpu_or_other = task_duration.saturating_sub(io_total);
+
+        debug!(
+            target: "engine::tree::prewarm",
+            worker_idx,
+            start_unix_ms = task_start_unix_ms,
+            end_unix_ms = task_end_unix_ms,
+            duration_ms = task_duration.as_millis(),
+            io_wait_ms = io_total.as_millis(),
+            io_storage_ms = io_storage.as_millis(),
+            io_code_ms = io_code.as_millis(),
+            io_account_ms = io_account.as_millis(),
+            cpu_or_other_ms = cpu_or_other.as_millis(),
+            executed_transactions,
+            "Prewarm worker finished"
+        );
+
         // send a message to the main task to flag that we're done
         let _ = done_tx.send(());
     }
@@ -682,7 +761,7 @@ where
                 let span = debug_span!(target: "engine::tree::payload_processor::prewarm", "prewarm worker", idx);
                 executor.spawn_blocking(move || {
                     let _enter = span.entered();
-                    ctx.transact_batch(rx, actions_tx, done_tx);
+                    ctx.transact_batch(idx, rx, actions_tx, done_tx);
                 });
             }
         });
@@ -713,7 +792,7 @@ where
 
         executor.spawn_blocking(move || {
             let _enter = span.entered();
-            ctx.prefetch_bal_slots(bal, range, done_tx);
+            ctx.prefetch_bal_slots(idx, bal, range, done_tx);
         });
     }
 
@@ -724,14 +803,27 @@ where
     #[instrument(level = "debug", target = "engine::tree::payload_processor::prewarm", skip_all)]
     fn prefetch_bal_slots(
         self,
+        worker_idx: usize,
         bal: Arc<BlockAccessList>,
         range: Range<usize>,
         done_tx: Sender<()>,
     ) {
-        let Self { saved_cache, provider, metrics, .. } = self;
+        let Self { saved_cache, provider, metrics, state_provider_metrics, .. } = self;
+
+        let task_start = Instant::now();
+        let task_start_unix_ms = unix_millis(SystemTime::now());
+
+        debug!(
+            target: "engine::tree::prewarm",
+            worker_idx,
+            range_start = range.start,
+            range_end = range.end,
+            start_unix_ms = task_start_unix_ms,
+            "BAL prewarm worker started"
+        );
 
         // Build state provider
-        let state_provider = match provider.build() {
+        let state_provider: Box<dyn StateProvider> = match provider.build() {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -742,6 +834,23 @@ where
                 let _ = done_tx.send(());
                 return;
             }
+        };
+
+        let enable_io_timing = state_provider_metrics ||
+            tracing::enabled!(target: "engine::tree::prewarm", level = tracing::Level::DEBUG);
+        let (state_provider, io_handle): (Box<dyn StateProvider>, Option<StateProviderLatencyHandle>) =
+            if enable_io_timing {
+            let handle = StateProviderLatencyHandle::default();
+            (
+                Box::new(InstrumentedStateProvider::new_with_handle(
+                    state_provider,
+                    "prewarm",
+                    handle.clone(),
+                )),
+                Some(handle),
+            )
+        } else {
+            (state_provider, None)
         };
 
         // Wrap with cache (guaranteed to be Some since run_bal_prewarm checks)
@@ -779,6 +888,42 @@ where
         // Signal completion
         let _ = done_tx.send(());
         metrics.bal_slot_iteration_duration.record(elapsed.as_secs_f64());
+
+        let task_duration = task_start.elapsed();
+        let task_end_unix_ms = unix_millis(SystemTime::now());
+        let io_storage = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_storage_fetch_latency)
+            .unwrap_or_default();
+        let io_code = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_code_fetch_latency)
+            .unwrap_or_default();
+        let io_account = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_account_fetch_latency)
+            .unwrap_or_default();
+        let io_total = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::total_fetch_latency)
+            .unwrap_or_default();
+        let cpu_or_other = task_duration.saturating_sub(io_total);
+
+        debug!(
+            target: "engine::tree::prewarm",
+            worker_idx,
+            range_start = range.start,
+            range_end = range.end,
+            start_unix_ms = task_start_unix_ms,
+            end_unix_ms = task_end_unix_ms,
+            duration_ms = task_duration.as_millis(),
+            io_wait_ms = io_total.as_millis(),
+            io_storage_ms = io_storage.as_millis(),
+            io_code_ms = io_code.as_millis(),
+            io_account_ms = io_account.as_millis(),
+            cpu_or_other_ms = cpu_or_other.as_millis(),
+            "BAL prewarm worker finished"
+        );
     }
 }
 
