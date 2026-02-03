@@ -708,6 +708,30 @@ where
             .as_ref()
             .map(StateProviderLatencyHandle::total_fetch_latency)
             .unwrap_or_default();
+        let io_storage_requests = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::storage_fetch_requests)
+            .unwrap_or(0);
+        let io_code_requests =
+            io_handle.as_ref().map(StateProviderLatencyHandle::code_fetch_requests).unwrap_or(0);
+        let io_account_requests = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::account_fetch_requests)
+            .unwrap_or(0);
+        let io_total_requests =
+            io_handle.as_ref().map(StateProviderLatencyHandle::total_fetch_requests).unwrap_or(0);
+        let io_storage_avg = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::avg_storage_fetch_latency)
+            .unwrap_or_default();
+        let io_code_avg =
+            io_handle.as_ref().map(StateProviderLatencyHandle::avg_code_fetch_latency).unwrap_or_default();
+        let io_account_avg = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::avg_account_fetch_latency)
+            .unwrap_or_default();
+        let io_total_avg =
+            io_handle.as_ref().map(StateProviderLatencyHandle::avg_total_fetch_latency).unwrap_or_default();
         let cpu_or_other = task_duration.saturating_sub(io_total);
 
         debug!(
@@ -720,6 +744,14 @@ where
             io_storage_ms = io_storage.as_millis(),
             io_code_ms = io_code.as_millis(),
             io_account_ms = io_account.as_millis(),
+            io_storage_requests,
+            io_code_requests,
+            io_account_requests,
+            io_total_requests,
+            io_storage_avg_wait_us = io_storage_avg.as_micros(),
+            io_code_avg_wait_us = io_code_avg.as_micros(),
+            io_account_avg_wait_us = io_account_avg.as_micros(),
+            io_avg_wait_us = io_total_avg.as_micros(),
             cpu_or_other_ms = cpu_or_other.as_millis(),
             executed_transactions,
             "Prewarm worker finished"
@@ -907,6 +939,30 @@ where
             .as_ref()
             .map(StateProviderLatencyHandle::total_fetch_latency)
             .unwrap_or_default();
+        let io_storage_requests = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::storage_fetch_requests)
+            .unwrap_or(0);
+        let io_code_requests =
+            io_handle.as_ref().map(StateProviderLatencyHandle::code_fetch_requests).unwrap_or(0);
+        let io_account_requests = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::account_fetch_requests)
+            .unwrap_or(0);
+        let io_total_requests =
+            io_handle.as_ref().map(StateProviderLatencyHandle::total_fetch_requests).unwrap_or(0);
+        let io_storage_avg = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::avg_storage_fetch_latency)
+            .unwrap_or_default();
+        let io_code_avg =
+            io_handle.as_ref().map(StateProviderLatencyHandle::avg_code_fetch_latency).unwrap_or_default();
+        let io_account_avg = io_handle
+            .as_ref()
+            .map(StateProviderLatencyHandle::avg_account_fetch_latency)
+            .unwrap_or_default();
+        let io_total_avg =
+            io_handle.as_ref().map(StateProviderLatencyHandle::avg_total_fetch_latency).unwrap_or_default();
         let cpu_or_other = task_duration.saturating_sub(io_total);
 
         debug!(
@@ -921,6 +977,14 @@ where
             io_storage_ms = io_storage.as_millis(),
             io_code_ms = io_code.as_millis(),
             io_account_ms = io_account.as_millis(),
+            io_storage_requests,
+            io_code_requests,
+            io_account_requests,
+            io_total_requests,
+            io_storage_avg_wait_us = io_storage_avg.as_micros(),
+            io_code_avg_wait_us = io_code_avg.as_micros(),
+            io_account_avg_wait_us = io_account_avg.as_micros(),
+            io_avg_wait_us = io_total_avg.as_micros(),
             cpu_or_other_ms = cpu_or_other.as_millis(),
             "BAL prewarm worker finished"
         );

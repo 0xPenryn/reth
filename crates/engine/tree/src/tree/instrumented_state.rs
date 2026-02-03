@@ -50,6 +50,11 @@ impl AtomicDuration {
         Duration::new(seconds, nanos as u32)
     }
 
+    /// Returns the total duration in nanoseconds.
+    pub(crate) fn nanos(&self) -> u64 {
+        self.nanos.load(Ordering::Relaxed)
+    }
+
     /// Adds a [`Duration`] to the atomic duration.
     pub(crate) fn add_duration(&self, duration: Duration) {
         // this is `as_nanos` but without the `as u128` - we do not expect durations over 584 years
@@ -67,6 +72,9 @@ pub(crate) struct StateProviderLatencyHandle {
     total_storage_fetch_latency: Arc<AtomicDuration>,
     total_code_fetch_latency: Arc<AtomicDuration>,
     total_account_fetch_latency: Arc<AtomicDuration>,
+    storage_fetch_requests: Arc<AtomicU64>,
+    code_fetch_requests: Arc<AtomicU64>,
+    account_fetch_requests: Arc<AtomicU64>,
 }
 
 impl Default for StateProviderLatencyHandle {
@@ -75,6 +83,9 @@ impl Default for StateProviderLatencyHandle {
             total_storage_fetch_latency: Arc::new(AtomicDuration::zero()),
             total_code_fetch_latency: Arc::new(AtomicDuration::zero()),
             total_account_fetch_latency: Arc::new(AtomicDuration::zero()),
+            storage_fetch_requests: Arc::new(AtomicU64::new(0)),
+            code_fetch_requests: Arc::new(AtomicU64::new(0)),
+            account_fetch_requests: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -101,6 +112,56 @@ impl StateProviderLatencyHandle {
             + self.total_code_fetch_latency()
             + self.total_account_fetch_latency()
     }
+
+    /// Returns the number of storage fetch requests.
+    pub(crate) fn storage_fetch_requests(&self) -> u64 {
+        self.storage_fetch_requests.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of code fetch requests.
+    pub(crate) fn code_fetch_requests(&self) -> u64 {
+        self.code_fetch_requests.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of account fetch requests.
+    pub(crate) fn account_fetch_requests(&self) -> u64 {
+        self.account_fetch_requests.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of fetch requests.
+    pub(crate) fn total_fetch_requests(&self) -> u64 {
+        self.storage_fetch_requests()
+            .saturating_add(self.code_fetch_requests())
+            .saturating_add(self.account_fetch_requests())
+    }
+
+    /// Returns the average storage fetch latency.
+    pub(crate) fn avg_storage_fetch_latency(&self) -> Duration {
+        average_latency(self.total_storage_fetch_latency.nanos(), self.storage_fetch_requests())
+    }
+
+    /// Returns the average code fetch latency.
+    pub(crate) fn avg_code_fetch_latency(&self) -> Duration {
+        average_latency(self.total_code_fetch_latency.nanos(), self.code_fetch_requests())
+    }
+
+    /// Returns the average account fetch latency.
+    pub(crate) fn avg_account_fetch_latency(&self) -> Duration {
+        average_latency(self.total_account_fetch_latency.nanos(), self.account_fetch_requests())
+    }
+
+    /// Returns the average fetch latency across all requests.
+    pub(crate) fn avg_total_fetch_latency(&self) -> Duration {
+        average_latency(self.total_fetch_latency().as_nanos() as u64, self.total_fetch_requests())
+    }
+}
+
+fn average_latency(total_nanos: u64, count: u64) -> Duration {
+    if count == 0 {
+        Duration::ZERO
+    } else {
+        Duration::from_nanos(total_nanos / count)
+    }
 }
 
 /// A wrapper of a state provider and latency metrics.
@@ -120,6 +181,15 @@ pub struct InstrumentedStateProvider<S> {
 
     /// The total time we spend fetching accounts over the lifetime of this state provider
     total_account_fetch_latency: Arc<AtomicDuration>,
+
+    /// Total number of storage fetch requests.
+    storage_fetch_requests: Arc<AtomicU64>,
+
+    /// Total number of code fetch requests.
+    code_fetch_requests: Arc<AtomicU64>,
+
+    /// Total number of account fetch requests.
+    account_fetch_requests: Arc<AtomicU64>,
 }
 
 impl<S> InstrumentedStateProvider<S>
@@ -144,6 +214,9 @@ where
             total_storage_fetch_latency: handle.total_storage_fetch_latency,
             total_code_fetch_latency: handle.total_code_fetch_latency,
             total_account_fetch_latency: handle.total_account_fetch_latency,
+            storage_fetch_requests: handle.storage_fetch_requests,
+            code_fetch_requests: handle.code_fetch_requests,
+            account_fetch_requests: handle.account_fetch_requests,
         }
     }
 }
@@ -154,6 +227,7 @@ impl<S> InstrumentedStateProvider<S> {
     fn record_storage_fetch(&self, latency: Duration) {
         self.metrics.storage_fetch_latency.record(latency);
         self.total_storage_fetch_latency.add_duration(latency);
+        self.storage_fetch_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records the latency for a code fetch, and increments the duration counter for the code
@@ -161,6 +235,7 @@ impl<S> InstrumentedStateProvider<S> {
     fn record_code_fetch(&self, latency: Duration) {
         self.metrics.code_fetch_latency.record(latency);
         self.total_code_fetch_latency.add_duration(latency);
+        self.code_fetch_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records the latency for an account fetch, and increments the duration counter for the
@@ -168,6 +243,7 @@ impl<S> InstrumentedStateProvider<S> {
     fn record_account_fetch(&self, latency: Duration) {
         self.metrics.account_fetch_latency.record(latency);
         self.total_account_fetch_latency.add_duration(latency);
+        self.account_fetch_requests.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records the total latencies into their respective gauges and histograms.
