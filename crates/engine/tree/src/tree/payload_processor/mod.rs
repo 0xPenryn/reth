@@ -439,6 +439,12 @@ where
             precompile_cache_map: self.precompile_cache_map.clone(),
         };
 
+        debug!(
+            target: "engine::tree::prewarm",
+            available_parallelism = ?std::thread::available_parallelism(),
+            "Initializing parallel prewarming"
+        );
+
         let (prewarm_task, to_prewarm_task) = PrewarmCacheTask::new(
             self.executor.clone(),
             self.execution_cache.clone(),
