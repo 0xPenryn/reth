@@ -534,7 +534,7 @@ where
         };
 
         let enable_io_timing = state_provider_metrics ||
-            tracing::enabled!(target: "engine::tree::prewarm", level = tracing::Level::DEBUG);
+            tracing::enabled!(target: "engine::tree::prewarm", tracing::Level::DEBUG);
         let io_handle = if enable_io_timing {
             let handle = StateProviderLatencyHandle::default();
             state_provider = Box::new(InstrumentedStateProvider::new_with_handle(
@@ -837,7 +837,7 @@ where
         };
 
         let enable_io_timing = state_provider_metrics ||
-            tracing::enabled!(target: "engine::tree::prewarm", level = tracing::Level::DEBUG);
+            tracing::enabled!(target: "engine::tree::prewarm", tracing::Level::DEBUG);
         let (state_provider, io_handle): (Box<dyn StateProvider>, Option<StateProviderLatencyHandle>) =
             if enable_io_timing {
             let handle = StateProviderLatencyHandle::default();
