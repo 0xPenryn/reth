@@ -25,6 +25,8 @@ pub use providers::{
     StaticFileWriter,
 };
 
+pub mod table_access;
+
 pub mod changeset_walker;
 pub mod changesets_utils;
 

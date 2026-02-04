@@ -34,8 +34,8 @@ use reth_evm::{execute::ExecutableTxFor, ConfigureEvm, Evm, EvmFor, SpecFor};
 use reth_metrics::Metrics;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
-    AccountReader, BlockExecutionOutput, BlockReader, StateProvider, StateProviderFactory,
-    StateReader,
+    table_access, AccountReader, BlockExecutionOutput, BlockReader, StateProvider,
+    StateProviderFactory, StateReader,
 };
 use reth_revm::{database::StateProviderDatabase, state::EvmState};
 use reth_trie::MultiProofTargets;
@@ -508,6 +508,7 @@ where
         PrewarmMetrics,
         Arc<AtomicBool>,
         Option<StateProviderLatencyHandle>,
+        bool,
     )> {
         let Self {
             env,
@@ -547,6 +548,12 @@ where
             None
         };
 
+        if enable_io_timing {
+            table_access::enable();
+        } else {
+            table_access::disable();
+        }
+
         // Use the caches to create a new provider with caching
         if let Some(saved_cache) = saved_cache {
             let caches = saved_cache.cache().clone();
@@ -582,7 +589,7 @@ where
             });
         }
 
-        Some((evm, metrics, terminate_execution, io_handle))
+        Some((evm, metrics, terminate_execution, io_handle, enable_io_timing))
     }
 
     /// Accepts an [`mpsc::Receiver`] of transactions and a handle to prewarm task. Executes
@@ -604,9 +611,36 @@ where
     ) where
         Tx: ExecutableTxFor<Evm>,
     {
-        let Some((mut evm, metrics, terminate_execution, io_handle)) = self.evm_for_ctx() else {
+        let Some((mut evm, metrics, terminate_execution, io_handle, table_access_enabled)) =
+            self.evm_for_ctx()
+        else {
             return
         };
+
+        fn log_table_access<T: std::fmt::Display>(
+            table_access_enabled: bool,
+            index: usize,
+            tx_hash: T,
+        ) {
+            if !table_access_enabled {
+                return;
+            }
+            if let Some(counts) = table_access::snapshot() {
+                debug!(
+                    target: "engine::tree::prewarm",
+                    index,
+                    tx_hash = %tx_hash,
+                    plain_storage_state = counts.plain_storage_state,
+                    storage_changesets = counts.storage_changesets,
+                    storages_history = counts.storages_history,
+                    plain_account_state = counts.plain_account_state,
+                    account_changesets = counts.account_changesets,
+                    accounts_history = counts.accounts_history,
+                    bytecodes = counts.bytecodes,
+                    "Prewarm tx db table accesses"
+                );
+            }
+        }
 
         let task_start = Instant::now();
         let task_start_unix_ms = unix_millis(SystemTime::now());
@@ -636,6 +670,9 @@ where
 
             // create the tx env
             let start = Instant::now();
+            if table_access_enabled {
+                table_access::reset();
+            }
 
             // If the task was cancelled, stop execution, send an empty result to notify the task,
             // and exit.
@@ -654,6 +691,7 @@ where
                         sender=%tx.signer(),
                         "Error when executing prewarm transaction",
                     );
+                    log_table_access(table_access_enabled, index, tx.tx().tx_hash());
                     // Track transaction execution errors
                     metrics.transaction_errors.increment(1);
                     // skip error because we can ignore these errors and continue with the next tx
@@ -661,6 +699,7 @@ where
                 }
             };
             metrics.execution_duration.record(start.elapsed());
+            log_table_access(table_access_enabled, index, tx.tx().tx_hash());
 
             // record some basic information about the transactions
             enter.record("gas_used", res.result.gas_used());
@@ -756,6 +795,10 @@ where
             executed_transactions,
             "Prewarm worker finished"
         );
+
+        if table_access_enabled {
+            table_access::disable();
+        }
 
         // send a message to the main task to flag that we're done
         let _ = done_tx.send(());

@@ -17,6 +17,7 @@ use reth_trie_db::{
     DatabaseProof, DatabaseStateRoot, DatabaseStorageProof, DatabaseStorageRoot,
     DatabaseTrieWitness,
 };
+use crate::table_access::{self, TableAccess};
 
 /// State provider over latest state that takes tx reference.
 ///
@@ -38,6 +39,7 @@ impl<'b, Provider: DBProvider> LatestStateProviderRef<'b, Provider> {
 impl<Provider: DBProvider> AccountReader for LatestStateProviderRef<'_, Provider> {
     /// Get basic account information.
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
+        table_access::record(TableAccess::PlainAccountState);
         self.tx().get_by_encoded_key::<tables::PlainAccountState>(address).map_err(Into::into)
     }
 }
@@ -157,6 +159,7 @@ impl<Provider: DBProvider + BlockHashReader> StateProvider
         account: Address,
         storage_key: StorageKey,
     ) -> ProviderResult<Option<StorageValue>> {
+        table_access::record(TableAccess::PlainStorageState);
         let mut cursor = self.tx().cursor_dup_read::<tables::PlainStorageState>()?;
         if let Some(entry) = cursor.seek_by_key_subkey(account, storage_key)? &&
             entry.key == storage_key
@@ -172,6 +175,7 @@ impl<Provider: DBProvider + BlockHashReader> BytecodeReader
 {
     /// Get account code by its hash
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
+        table_access::record(TableAccess::Bytecodes);
         self.tx().get_by_encoded_key::<tables::Bytecodes>(code_hash).map_err(Into::into)
     }
 }

@@ -29,6 +29,7 @@ use reth_trie_db::{
     DatabaseHashedPostState, DatabaseHashedStorage, DatabaseProof, DatabaseStateRoot,
     DatabaseStorageProof, DatabaseStorageRoot, DatabaseTrieWitness,
 };
+use crate::table_access::{self, TableAccess};
 
 use std::fmt::Debug;
 
@@ -132,6 +133,7 @@ impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
     where
         Provider: StorageSettingsCache + RocksDBProviderFactory + NodePrimitivesProvider,
     {
+        table_access::record(TableAccess::AccountsHistory);
         if !self.lowest_available_blocks.is_account_history_available(self.block_number) {
             return Err(ProviderError::StateAtBlockPruned(self.block_number))
         }
@@ -155,6 +157,7 @@ impl<'b, Provider: DBProvider + ChangeSetReader + BlockNumReader>
     where
         Provider: StorageSettingsCache + RocksDBProviderFactory + NodePrimitivesProvider,
     {
+        table_access::record(TableAccess::StoragesHistory);
         if !self.lowest_available_blocks.is_storage_history_available(self.block_number) {
             return Err(ProviderError::StateAtBlockPruned(self.block_number))
         }
@@ -252,6 +255,7 @@ impl<
         match self.account_history_lookup(*address)? {
             HistoryInfo::NotYetWritten => Ok(None),
             HistoryInfo::InChangeset(changeset_block_number) => {
+                table_access::record(TableAccess::AccountChangeSets);
                 // Use ChangeSetReader trait method to get the account from changesets
                 self.provider
                     .get_account_before_block(changeset_block_number, *address)?
@@ -262,6 +266,7 @@ impl<
                     .map(|account_before| account_before.info)
             }
             HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
+                table_access::record(TableAccess::PlainAccountState);
                 Ok(self.tx().get_by_encoded_key::<tables::PlainAccountState>(address)?)
             }
         }
@@ -418,7 +423,9 @@ impl<
     ) -> ProviderResult<Option<StorageValue>> {
         match self.storage_history_lookup(address, storage_key)? {
             HistoryInfo::NotYetWritten => Ok(None),
-            HistoryInfo::InChangeset(changeset_block_number) => Ok(Some(
+            HistoryInfo::InChangeset(changeset_block_number) => {
+                table_access::record(TableAccess::StorageChangeSets);
+                Ok(Some(
                 self.tx()
                     .cursor_dup_read::<tables::StorageChangeSets>()?
                     .seek_by_key_subkey((changeset_block_number, address).into(), storage_key)?
@@ -429,14 +436,18 @@ impl<
                         storage_key: Box::new(storage_key),
                     })?
                     .value,
-            )),
-            HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => Ok(self
-                .tx()
-                .cursor_dup_read::<tables::PlainStorageState>()?
-                .seek_by_key_subkey(address, storage_key)?
-                .filter(|entry| entry.key == storage_key)
-                .map(|entry| entry.value)
-                .or(Some(StorageValue::ZERO))),
+            ))
+            }
+            HistoryInfo::InPlainState | HistoryInfo::MaybeInPlainState => {
+                table_access::record(TableAccess::PlainStorageState);
+                Ok(self
+                    .tx()
+                    .cursor_dup_read::<tables::PlainStorageState>()?
+                    .seek_by_key_subkey(address, storage_key)?
+                    .filter(|entry| entry.key == storage_key)
+                    .map(|entry| entry.value)
+                    .or(Some(StorageValue::ZERO)))
+            }
         }
     }
 }
@@ -446,6 +457,7 @@ impl<Provider: DBProvider + BlockNumReader> BytecodeReader
 {
     /// Get account code by its hash
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
+        table_access::record(TableAccess::Bytecodes);
         self.tx().get_by_encoded_key::<tables::Bytecodes>(code_hash).map_err(Into::into)
     }
 }
