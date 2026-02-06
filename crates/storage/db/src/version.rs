@@ -9,7 +9,7 @@ use std::{
 pub const DB_VERSION_FILE_NAME: &str = "database.version";
 /// The version of the database stored in the [`DB_VERSION_FILE_NAME`] file in the same directory as
 /// database.
-pub const DB_VERSION: u64 = 2;
+pub const DB_VERSION: u64 = 3;
 
 /// Error when checking a database version using [`check_db_version_file`]
 #[derive(thiserror::Error, Debug)]
@@ -48,7 +48,7 @@ pub enum DatabaseVersionError {
 pub fn check_db_version_file<P: AsRef<Path>>(db_path: P) -> Result<(), DatabaseVersionError> {
     let version = get_db_version(db_path)?;
     if version != DB_VERSION {
-        return Err(DatabaseVersionError::VersionMismatch { version })
+        return Err(DatabaseVersionError::VersionMismatch { version });
     }
 
     Ok(())

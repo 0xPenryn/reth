@@ -186,7 +186,7 @@ where
                 crsr.append(k, &v).expect("submit");
             }
 
-            tx.inner.commit().unwrap()
+            tx.commit().unwrap()
         });
     }
     db
@@ -204,7 +204,7 @@ where
                 crsr.insert(k, &v).expect("submit");
             }
 
-            tx.inner.commit().unwrap()
+            tx.commit().unwrap()
         });
     }
     db
@@ -221,7 +221,7 @@ where
                 tx.put::<T>(k, v).expect("submit");
             }
 
-            tx.inner.commit().unwrap()
+            tx.commit().unwrap()
         });
     }
     db
@@ -243,29 +243,21 @@ where
     T: Table,
 {
     db.view(|tx| {
-        let table_db = tx.inner.open_db(Some(T::NAME)).map_err(|_| "Could not open db.").unwrap();
+        let stats = tx.table_stats_by_name(T::NAME).map_err(|_| "Could not find table.").unwrap();
 
-        println!(
-            "{:?}\n",
-            tx.inner
-                .db_stat(table_db.dbi())
-                .map_err(|_| format!("Could not find table: {}", T::NAME))
-                .map(|stats| {
-                    let num_pages =
-                        stats.leaf_pages() + stats.branch_pages() + stats.overflow_pages();
-                    let size = num_pages * stats.page_size() as usize;
+        println!("{:?}\n", {
+            let num_pages = stats.leaf_pages() + stats.branch_pages() + stats.overflow_pages();
+            let size = num_pages * stats.page_size() as usize;
 
-                    TableStats {
-                        page_size: stats.page_size() as usize,
-                        leaf_pages: stats.leaf_pages(),
-                        branch_pages: stats.branch_pages(),
-                        overflow_pages: stats.overflow_pages(),
-                        num_pages,
-                        size,
-                    }
-                })
-                .unwrap()
-        );
+            TableStats {
+                page_size: stats.page_size() as usize,
+                leaf_pages: stats.leaf_pages(),
+                branch_pages: stats.branch_pages(),
+                overflow_pages: stats.overflow_pages(),
+                num_pages,
+                size,
+            }
+        });
     })
     .unwrap();
 }

@@ -60,6 +60,11 @@ pub struct DatabaseArgs {
         value_parser = value_parser!(SyncMode),
     )]
     pub sync_mode: Option<SyncMode>,
+    /// Lock plain-state MDBX pages in RAM (`PlainStorageState`, `PlainAccountState`, `Bytecodes`).
+    ///
+    /// By default this is enabled for node startup. Set to `false` to disable page locking.
+    #[arg(long = "db.lock-plain-state")]
+    pub lock_plain_state_in_memory: Option<bool>,
 }
 
 impl DatabaseArgs {
@@ -89,6 +94,7 @@ impl DatabaseArgs {
             .with_growth_step(self.growth_step)
             .with_max_readers(self.max_readers)
             .with_sync_mode(self.sync_mode)
+            .with_lock_plain_state_in_memory(self.lock_plain_state_in_memory.or(Some(true)))
     }
 }
 

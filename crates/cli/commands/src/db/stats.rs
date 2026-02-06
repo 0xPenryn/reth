@@ -1,11 +1,10 @@
 use crate::{common::CliNodeTypes, db::checksum::ChecksumViewer};
 use clap::Parser;
 use comfy_table::{Cell, Row, Table as ComfyTable};
-use eyre::WrapErr;
 use human_bytes::human_bytes;
 use itertools::Itertools;
 use reth_chainspec::EthereumHardforks;
-use reth_db::{mdbx, static_file::iter_static_files, DatabaseEnv};
+use reth_db::{static_file::iter_static_files, DatabaseEnv};
 use reth_db_api::{database::Database, TableViewer, Tables};
 use reth_db_common::DbTool;
 use reth_fs_util as fs;
@@ -79,17 +78,13 @@ impl Command {
             "Total Size",
         ]);
 
-        tool.provider_factory.db_ref().view(|tx| {
+        let db = tool.provider_factory.db_ref();
+        db.view(|tx| {
             let mut db_tables = Tables::ALL.iter().map(|table| table.name()).collect::<Vec<_>>();
             db_tables.sort();
             let mut total_size = 0;
             for db_table in db_tables {
-                let table_db = tx.inner.open_db(Some(db_table)).wrap_err("Could not open db.")?;
-
-                let stats = tx
-                    .inner
-                    .db_stat(table_db.dbi())
-                    .wrap_err(format!("Could not find table: {db_table}"))?;
+                let stats = tx.table_stats_by_name(db_table)?;
 
                 // Defaults to 16KB right now but we should
                 // re-evaluate depending on the DB we end up using
@@ -128,9 +123,8 @@ impl Command {
                 .add_cell(Cell::new(human_bytes(total_size as f64)));
             table.add_row(row);
 
-            let freelist = tx.inner.env().freelist()?;
-            let pagesize =
-                tx.inner.db_stat(mdbx::Database::freelist_db().dbi())?.page_size() as usize;
+            let freelist = db.total_freelist()?;
+            let pagesize = db.stat()?.page_size() as usize;
             let freelist_size = freelist * pagesize;
 
             let mut row = Row::new();
@@ -299,10 +293,10 @@ impl Command {
                         .add_cell(Cell::new(human_bytes(segment_config_size as f64)));
                 }
                 row.add_cell(Cell::new(human_bytes(
-                    (segment_data_size +
-                        segment_index_size +
-                        segment_offsets_size +
-                        segment_config_size) as f64,
+                    (segment_data_size
+                        + segment_index_size
+                        + segment_offsets_size
+                        + segment_config_size) as f64,
                 )));
                 table.add_row(row);
             }

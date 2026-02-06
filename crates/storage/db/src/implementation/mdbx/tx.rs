@@ -1,6 +1,6 @@
 //! Transaction wrapper for libmdbx-sys.
 
-use super::{cursor::Cursor, utils::*};
+use super::{cursor::Cursor, table_instance_for_name, utils::*, DatabaseInstance};
 use crate::{
     metrics::{DatabaseEnvMetrics, Operation, TransactionMode, TransactionOutcome},
     DatabaseError,
@@ -9,7 +9,9 @@ use reth_db_api::{
     table::{Compress, DupSort, Encode, Table, TableImporter},
     transaction::{DbTx, DbTxMut},
 };
-use reth_libmdbx::{ffi::MDBX_dbi, CommitLatency, Transaction, TransactionKind, WriteFlags, RW};
+use reth_libmdbx::{
+    ffi::MDBX_dbi, CommitLatency, Stat, Transaction, TransactionKind, WriteFlags, RW,
+};
 use reth_storage_errors::db::{DatabaseWriteError, DatabaseWriteOperation};
 use reth_tracing::tracing::{debug, trace, warn};
 use std::{
@@ -29,17 +31,24 @@ const LONG_TRANSACTION_DURATION: Duration = Duration::from_secs(60);
 /// Wrapper for the libmdbx transaction.
 #[derive(Debug)]
 pub struct Tx<K: TransactionKind> {
-    /// Libmdbx-sys transaction.
-    pub inner: Transaction<K>,
+    /// Main-environment libmdbx transaction.
+    inner: Transaction<K>,
+    /// Plain-state libmdbx transaction.
+    plain_inner: Transaction<K>,
 
-    /// Cached MDBX DBIs for reuse.
+    /// Cached main-environment MDBX DBIs for reuse.
     dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
+    /// Cached plain-state MDBX DBIs for reuse.
+    plain_dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
 
     /// Handler for metrics with its own [Drop] implementation for cases when the transaction isn't
     /// closed by [`Tx::commit`] or [`Tx::abort`], but we still need to report it in the metrics.
     ///
     /// If [Some], then metrics are reported.
     metrics_handler: Option<MetricsHandler<K>>,
+
+    /// If true, attempt to keep plain-state pages locked in RAM after plain writes.
+    lock_plain_state_in_memory: bool,
 }
 
 impl<K: TransactionKind> Tx<K> {
@@ -48,8 +57,11 @@ impl<K: TransactionKind> Tx<K> {
     #[track_caller]
     pub(crate) fn new(
         inner: Transaction<K>,
+        plain_inner: Transaction<K>,
         dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
+        plain_dbis: Arc<HashMap<&'static str, MDBX_dbi>>,
         env_metrics: Option<Arc<DatabaseEnvMetrics>>,
+        lock_plain_state_in_memory: bool,
     ) -> reth_libmdbx::Result<Self> {
         let metrics_handler = env_metrics
             .map(|env_metrics| {
@@ -59,7 +71,14 @@ impl<K: TransactionKind> Tx<K> {
                 Ok(handler)
             })
             .transpose()?;
-        Ok(Self { inner, dbis, metrics_handler })
+        Ok(Self {
+            inner,
+            plain_inner,
+            dbis,
+            plain_dbis,
+            metrics_handler,
+            lock_plain_state_in_memory,
+        })
     }
 
     /// Gets this transaction ID.
@@ -67,13 +86,34 @@ impl<K: TransactionKind> Tx<K> {
         self.metrics_handler.as_ref().map_or_else(|| self.inner.id(), |handler| Ok(handler.txn_id))
     }
 
+    #[inline]
+    fn transaction_for_name(&self, name: &str) -> &Transaction<K> {
+        match table_instance_for_name(name) {
+            DatabaseInstance::Main => &self.inner,
+            DatabaseInstance::PlainState => &self.plain_inner,
+        }
+    }
+
+    #[inline]
+    fn transaction_for_table<T: Table>(&self) -> &Transaction<K> {
+        self.transaction_for_name(T::NAME)
+    }
+
+    #[inline]
+    fn dbis_for_name(&self, name: &str) -> &HashMap<&'static str, MDBX_dbi> {
+        match table_instance_for_name(name) {
+            DatabaseInstance::Main => &self.dbis,
+            DatabaseInstance::PlainState => &self.plain_dbis,
+        }
+    }
+
     /// Gets a table database handle by name if it exists, otherwise, check the
     /// database, opening the DB if it exists.
     pub fn get_dbi_raw(&self, name: &str) -> Result<MDBX_dbi, DatabaseError> {
-        if let Some(dbi) = self.dbis.get(name) {
+        if let Some(dbi) = self.dbis_for_name(name).get(name) {
             Ok(*dbi)
         } else {
-            self.inner
+            self.transaction_for_name(name)
                 .open_db(Some(name))
                 .map(|db| db.dbi())
                 .map_err(|e| DatabaseError::Open(e.into()))
@@ -89,7 +129,7 @@ impl<K: TransactionKind> Tx<K> {
     /// Create db Cursor
     pub fn new_cursor<T: Table>(&self) -> Result<Cursor<K, T>, DatabaseError> {
         let inner = self
-            .inner
+            .transaction_for_table::<T>()
             .cursor_with_dbi(self.get_dbi::<T>()?)
             .map_err(|e| DatabaseError::InitCursor(e.into()))?;
 
@@ -146,23 +186,27 @@ impl<K: TransactionKind> Tx<K> {
         }
     }
 
+    /// Returns stats for a table selected by name, routing to the right MDBX environment.
+    pub fn table_stats_by_name(&self, name: &str) -> Result<Stat, DatabaseError> {
+        self.transaction_for_name(name)
+            .db_stat_with_dbi(self.get_dbi_raw(name)?)
+            .map_err(|e| DatabaseError::Stats(e.into()))
+    }
+
     /// If `self.metrics_handler == Some(_)`, measure the time it takes to execute the closure and
     /// record a metric with the provided operation.
-    ///
     /// Otherwise, just execute the closure.
     fn execute_with_operation_metric<T: Table, R>(
         &self,
         operation: Operation,
         value_size: Option<usize>,
-        f: impl FnOnce(&Transaction<K>) -> R,
+        f: impl FnOnce() -> R,
     ) -> R {
         if let Some(metrics_handler) = &self.metrics_handler {
             metrics_handler.log_backtrace_on_long_read_transaction();
-            metrics_handler
-                .env_metrics
-                .record_operation(T::NAME, operation, value_size, || f(&self.inner))
+            metrics_handler.env_metrics.record_operation(T::NAME, operation, value_size, f)
         } else {
-            f(&self.inner)
+            f()
         }
     }
 }
@@ -236,9 +280,9 @@ impl<K: TransactionKind> MetricsHandler<K> {
     /// NOTE: Backtrace is recorded using [`Backtrace::force_capture`], so `RUST_BACKTRACE` env var
     /// is not needed.
     fn log_backtrace_on_long_read_transaction(&self) {
-        if self.record_backtrace &&
-            !self.backtrace_recorded.load(Ordering::Relaxed) &&
-            self.transaction_mode().is_read_only()
+        if self.record_backtrace
+            && !self.backtrace_recorded.load(Ordering::Relaxed)
+            && self.transaction_mode().is_read_only()
         {
             let open_duration = self.start.elapsed();
             if open_duration >= self.long_transaction_duration {
@@ -294,8 +338,9 @@ impl<K: TransactionKind> DbTx for Tx<K> {
         &self,
         key: &<T::Key as Encode>::Encoded,
     ) -> Result<Option<T::Value>, DatabaseError> {
-        self.execute_with_operation_metric::<T, _>(Operation::Get, None, |tx| {
-            tx.get(self.get_dbi::<T>()?, key.as_ref())
+        self.execute_with_operation_metric::<T, _>(Operation::Get, None, || {
+            self.transaction_for_table::<T>()
+                .get(self.get_dbi::<T>()?, key.as_ref())
                 .map_err(|e| DatabaseError::Read(e.into()))?
                 .map(decode_one::<T>)
                 .transpose()
@@ -304,16 +349,37 @@ impl<K: TransactionKind> DbTx for Tx<K> {
 
     fn commit(self) -> Result<(), DatabaseError> {
         self.execute_with_close_transaction_metric(TransactionOutcome::Commit, |this| {
-            match this.inner.commit().map_err(|e| DatabaseError::Commit(e.into())) {
-                Ok(latency) => (Ok(()), Some(latency)),
+            let plain_env = this.plain_inner.env().clone();
+            match this.plain_inner.commit().map_err(|e| DatabaseError::Commit(e.into())) {
                 Err(e) => (Err(e), None),
+                Ok(_) => {
+                    if !K::IS_READ_ONLY && this.lock_plain_state_in_memory {
+                        if let Err(err) = plain_env.warmup(
+                            reth_libmdbx::ffi::MDBX_warmup_lock
+                                | reth_libmdbx::ffi::MDBX_warmup_oomsafe,
+                            Duration::from_secs(5),
+                        ) {
+                            warn!(
+                                target: "storage::db::mdbx",
+                                %err,
+                                "Failed to refresh plain-state page lock after commit"
+                            );
+                        }
+                    }
+                    match this.inner.commit().map_err(|e| DatabaseError::Commit(e.into())) {
+                        Ok(latency) => (Ok(()), Some(latency)),
+                        Err(e) => (Err(e), None),
+                    }
+                }
             }
         })
     }
 
     fn abort(self) {
         self.execute_with_close_transaction_metric(TransactionOutcome::Abort, |this| {
-            (drop(this.inner), None)
+            drop(this.plain_inner);
+            drop(this.inner);
+            ((), None)
         })
     }
 
@@ -330,7 +396,7 @@ impl<K: TransactionKind> DbTx for Tx<K> {
     /// Returns number of entries in the table using cheap DB stats invocation.
     fn entries<T: Table>(&self) -> Result<usize, DatabaseError> {
         Ok(self
-            .inner
+            .transaction_for_table::<T>()
             .db_stat_with_dbi(self.get_dbi::<T>()?)
             .map_err(|e| DatabaseError::Stats(e.into()))?
             .entries())
@@ -344,6 +410,7 @@ impl<K: TransactionKind> DbTx for Tx<K> {
         }
 
         self.inner.disable_timeout();
+        self.plain_inner.disable_timeout();
     }
 }
 
@@ -381,16 +448,18 @@ impl Tx<RW> {
         let key = key.encode();
         let value = value.compress();
         let (operation, write_operation, flags) = kind.into_operation_and_flags();
-        self.execute_with_operation_metric::<T, _>(operation, Some(value.as_ref().len()), |tx| {
-            tx.put(self.get_dbi::<T>()?, key.as_ref(), value, flags).map_err(|e| {
-                DatabaseWriteError {
-                    info: e.into(),
-                    operation: write_operation,
-                    table_name: T::NAME,
-                    key: key.into(),
-                }
-                .into()
-            })
+        self.execute_with_operation_metric::<T, _>(operation, Some(value.as_ref().len()), || {
+            self.transaction_for_table::<T>()
+                .put(self.get_dbi::<T>()?, key.as_ref(), value, flags)
+                .map_err(|e| {
+                    DatabaseWriteError {
+                        info: e.into(),
+                        operation: write_operation,
+                        table_name: T::NAME,
+                        key: key.into(),
+                    }
+                    .into()
+                })
         })
     }
 }
@@ -419,14 +488,17 @@ impl DbTxMut for Tx<RW> {
             data = Some(value.as_ref());
         };
 
-        self.execute_with_operation_metric::<T, _>(Operation::Delete, None, |tx| {
-            tx.del(self.get_dbi::<T>()?, key.encode(), data)
+        self.execute_with_operation_metric::<T, _>(Operation::Delete, None, || {
+            self.transaction_for_table::<T>()
+                .del(self.get_dbi::<T>()?, key.encode(), data)
                 .map_err(|e| DatabaseError::Delete(e.into()))
         })
     }
 
     fn clear<T: Table>(&self) -> Result<(), DatabaseError> {
-        self.inner.clear_db(self.get_dbi::<T>()?).map_err(|e| DatabaseError::Delete(e.into()))?;
+        self.transaction_for_table::<T>()
+            .clear_db(self.get_dbi::<T>()?)
+            .map_err(|e| DatabaseError::Delete(e.into()))?;
 
         Ok(())
     }

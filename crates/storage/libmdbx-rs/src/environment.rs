@@ -118,10 +118,10 @@ impl Environment {
                     warn!(target: "libmdbx", "Process stalled, awaiting read-write transaction lock.");
                 }
                 sleep(Duration::from_millis(250));
-                continue
+                continue;
             }
 
-            break res
+            break res;
         }?;
         Ok(Transaction::new_from_ptr(self.clone(), txn.0))
     }
@@ -152,6 +152,17 @@ impl Environment {
     /// Flush the environment data buffers to disk.
     pub fn sync(&self, force: bool) -> Result<bool> {
         mdbx_result(unsafe { ffi::mdbx_env_sync_ex(self.env_ptr(), force, false) })
+    }
+
+    /// Warms up the environment pages and applies the provided warmup flags.
+    ///
+    /// The timeout uses units of 1/65536 of a second.
+    pub fn warmup(&self, flags: ffi::MDBX_warmup_flags_t, timeout: Duration) -> Result<bool> {
+        let timeout_seconds_16dot16 =
+            (timeout.as_secs_f64() * 65536f64).clamp(0.0, u32::MAX as f64) as u32;
+        mdbx_result(unsafe {
+            ffi::mdbx_env_warmup(self.env_ptr(), ptr::null(), flags, timeout_seconds_16dot16)
+        })
     }
 
     /// Retrieves statistics about this environment.
@@ -216,7 +227,7 @@ impl Environment {
         for result in cursor.iter_slices() {
             let (_key, value) = result?;
             if value.len() < size_of::<u32>() {
-                return Err(Error::Corrupted)
+                return Err(Error::Corrupted);
             }
             let s = &value[..size_of::<u32>()];
             freelist += NativeEndian::read_u32(s) as usize;
@@ -727,7 +738,7 @@ impl EnvironmentBuilder {
             })() {
                 ffi::mdbx_env_close_ex(env, false);
 
-                return Err(e)
+                return Err(e);
             }
         }
 

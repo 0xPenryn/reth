@@ -223,13 +223,16 @@ pub mod test_utils {
 mod tests {
     use crate::{
         init_db,
-        mdbx::DatabaseArguments,
+        mdbx::{DatabaseArguments, DatabaseEnv},
         open_db, tables,
-        version::{db_version_file_path, DatabaseVersionError},
+        version::{db_version_file_path, get_db_version, DatabaseVersionError, DB_VERSION},
     };
     use assert_matches::assert_matches;
     use reth_db_api::{
-        cursor::DbCursorRO, database::Database, models::ClientVersion, transaction::DbTx,
+        cursor::DbCursorRO,
+        database::Database,
+        models::ClientVersion,
+        transaction::{DbTx, DbTxMut},
     };
     use reth_libmdbx::MaxReadTransactionDuration;
     use std::time::Duration;
@@ -358,5 +361,28 @@ mod tests {
                 vec![first_version, second_version, third_version]
             );
         }
+    }
+
+    #[test]
+    fn migrate_legacy_v2_plain_state() {
+        let path = tempdir().unwrap();
+        let args = DatabaseArguments::new(ClientVersion::default())
+            .with_max_read_transaction_duration(Some(MaxReadTransactionDuration::Unbounded))
+            .with_lock_plain_state_in_memory(Some(false));
+
+        reth_fs_util::create_dir_all(path.path()).unwrap();
+        reth_fs_util::write(path.path().join(db_version_file_path(&path)), "2").unwrap();
+
+        let db = init_db(&path, args).unwrap();
+        let tx = db.tx_mut().unwrap();
+        tx.put::<tables::PlainAccountState>(
+            alloy_primitives::Address::with_last_byte(1),
+            reth_primitives_traits::Account::default(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        assert!(DatabaseEnv::plain_state_env_path(path.path()).exists());
+        assert_eq!(get_db_version(path.path()).unwrap(), DB_VERSION);
     }
 }

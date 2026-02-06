@@ -1,7 +1,6 @@
 use super::tui::DbListTUI;
 use alloy_primitives::hex;
 use clap::Parser;
-use eyre::WrapErr;
 use reth_chainspec::EthereumHardforks;
 use reth_db::{transaction::DbTx, DatabaseEnv};
 use reth_db_api::{database::Database, table::Table, RawValue, TableViewer, Tables};
@@ -67,7 +66,7 @@ impl Command {
             .as_ref()
             .map(|search| {
                 if let Some(search) = search.strip_prefix("0x") {
-                    return hex::decode(search).unwrap()
+                    return hex::decode(search).unwrap();
                 }
                 search.as_bytes().to_vec()
             })
@@ -99,9 +98,7 @@ impl<N: NodeTypes> TableViewer<()> for ListTableViewer<'_, N> {
             // We may be using the tui for a long time
             tx.disable_long_read_transaction_safety();
 
-            let table_db = tx.inner.open_db(Some(self.args.table.name())).wrap_err("Could not open db.")?;
-            let stats = tx.inner.db_stat(table_db.dbi()).wrap_err(format!("Could not find table: {}", self.args.table.name()))?;
-            let total_entries = stats.entries();
+            let total_entries = tx.entries::<T>()?;
             let final_entry_idx = total_entries.saturating_sub(1);
             if self.args.skip > final_entry_idx {
                 error!(

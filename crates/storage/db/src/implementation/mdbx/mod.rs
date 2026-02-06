@@ -7,7 +7,6 @@ use crate::{
     utils::default_page_size,
     DatabaseError, TableSet,
 };
-use eyre::Context;
 use metrics::{gauge, Label};
 use reth_db_api::{
     cursor::{DbCursorRO, DbCursorRW},
@@ -21,13 +20,13 @@ use reth_libmdbx::{
     MaxReadTransactionDuration, Mode, PageSize, SyncMode, RO, RW,
 };
 use reth_storage_errors::db::LogLevel;
-use reth_tracing::tracing::error;
+use reth_tracing::tracing::{error, warn};
 use std::{
     collections::HashMap,
     ops::{Deref, Range},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tx::Tx;
 
@@ -51,6 +50,36 @@ const DEFAULT_MAX_READERS: u64 = 32_000;
 /// Space that a read-only transaction can occupy until the warning is emitted.
 /// See [`reth_libmdbx::EnvironmentBuilder::set_handle_slow_readers`] for more information.
 const MAX_SAFE_READER_SPACE: usize = 10 * GIGABYTE;
+
+/// Sub-directory where the plain-state environment lives.
+pub const PLAIN_STATE_ENV_DIR: &str = "plain-state";
+
+/// Timeout for MDBX warmup lock operation.
+const PLAIN_STATE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseInstance {
+    Main,
+    PlainState,
+}
+
+pub(crate) const PLAIN_STATE_TABLES: [Tables; 3] =
+    [Tables::PlainStorageState, Tables::PlainAccountState, Tables::Bytecodes];
+
+#[inline]
+pub(crate) fn table_instance_for_name(name: &str) -> DatabaseInstance {
+    if PLAIN_STATE_TABLES.iter().any(|table| table.name() == name) {
+        DatabaseInstance::PlainState
+    } else {
+        DatabaseInstance::Main
+    }
+}
+
+#[derive(Default)]
+struct TrackedDbis {
+    main: Vec<(&'static str, ffi::MDBX_dbi)>,
+    plain: Vec<(&'static str, ffi::MDBX_dbi)>,
+}
 
 /// Environment used when opening a MDBX environment. RO/RW.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +148,8 @@ pub struct DatabaseArguments {
     /// environments). Choose `SafeNoSync` if performance is more important and occasional data
     /// loss is acceptable (e.g., testing or ephemeral data).
     sync_mode: SyncMode,
+    /// If `true`, reth attempts to lock the plain-state database pages in memory.
+    lock_plain_state_in_memory: bool,
 }
 
 impl Default for DatabaseArguments {
@@ -143,6 +174,7 @@ impl DatabaseArguments {
             exclusive: None,
             max_readers: None,
             sync_mode: SyncMode::Durable,
+            lock_plain_state_in_memory: false,
         }
     }
 
@@ -167,6 +199,18 @@ impl DatabaseArguments {
     pub const fn with_sync_mode(mut self, sync_mode: Option<SyncMode>) -> Self {
         if let Some(sync_mode) = sync_mode {
             self.sync_mode = sync_mode;
+        }
+
+        self
+    }
+
+    /// Sets whether plain-state tables should be locked in RAM.
+    pub const fn with_lock_plain_state_in_memory(
+        mut self,
+        lock_plain_state_in_memory: Option<bool>,
+    ) -> Self {
+        if let Some(lock_plain_state_in_memory) = lock_plain_state_in_memory {
+            self.lock_plain_state_in_memory = lock_plain_state_in_memory;
         }
 
         self
@@ -219,21 +263,32 @@ impl DatabaseArguments {
     pub const fn client_version(&self) -> &ClientVersion {
         &self.client_version
     }
+
+    /// Returns whether plain-state tables are configured to be locked in RAM.
+    pub const fn lock_plain_state_in_memory(&self) -> bool {
+        self.lock_plain_state_in_memory
+    }
 }
 
 /// Wrapper for the libmdbx environment: [Environment]
 #[derive(Debug)]
 pub struct DatabaseEnv {
-    /// Libmdbx-sys environment.
+    /// Main libmdbx environment, contains all non-plain-state tables.
     inner: Environment,
+    /// Plain-state environment, contains plain account/storage state and bytecodes.
+    plain_inner: Environment,
     /// Opened DBIs for reuse.
     /// Important: Do not manually close these DBIs, like via `mdbx_dbi_close`.
     /// More generally, do not dynamically create, re-open, or drop tables at
     /// runtime. It's better to perform table creation and migration only once
     /// at startup.
     dbis: Arc<HashMap<&'static str, ffi::MDBX_dbi>>,
+    /// Opened DBIs for the plain-state environment.
+    plain_dbis: Arc<HashMap<&'static str, ffi::MDBX_dbi>>,
     /// Cache for metric handles. If `None`, metrics are not recorded.
     metrics: Option<Arc<DatabaseEnvMetrics>>,
+    /// If true, keep plain-state pages locked in RAM by warming up after commits.
+    lock_plain_state_in_memory: bool,
     /// Write lock for when dealing with a read-write environment.
     _lock_file: Option<StorageLock>,
 }
@@ -245,8 +300,11 @@ impl Database for DatabaseEnv {
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
         Tx::new(
             self.inner.begin_ro_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
+            self.plain_inner.begin_ro_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
             self.dbis.clone(),
+            self.plain_dbis.clone(),
             self.metrics.clone(),
+            self.lock_plain_state_in_memory,
         )
         .map_err(|e| DatabaseError::InitTx(e.into()))
     }
@@ -254,8 +312,11 @@ impl Database for DatabaseEnv {
     fn tx_mut(&self) -> Result<Self::TXMut, DatabaseError> {
         Tx::new(
             self.inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
+            self.plain_inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?,
             self.dbis.clone(),
+            self.plain_dbis.clone(),
             self.metrics.clone(),
+            self.lock_plain_state_in_memory,
         )
         .map_err(|e| DatabaseError::InitTx(e.into()))
     }
@@ -274,12 +335,7 @@ impl DatabaseMetrics for DatabaseEnv {
         let _ = self
             .view(|tx| {
                 for table in Tables::ALL.iter().map(Tables::name) {
-                    let table_db = tx.inner.open_db(Some(table)).wrap_err("Could not open db.")?;
-
-                    let stats = tx
-                        .inner
-                        .db_stat(table_db.dbi())
-                        .wrap_err(format!("Could not find table: {table}"))?;
+                    let stats = tx.table_stats_by_name(table)?;
 
                     let page_size = stats.page_size() as usize;
                     let leaf_pages = stats.leaf_pages();
@@ -321,7 +377,7 @@ impl DatabaseMetrics for DatabaseEnv {
             .map_err(|error| error!(%error, "Failed to read db table stats"));
 
         if let Ok(freelist) =
-            self.freelist().map_err(|error| error!(%error, "Failed to read db.freelist"))
+            self.total_freelist().map_err(|error| error!(%error, "Failed to read db.freelist"))
         {
             metrics.push(("db.freelist", freelist as f64, vec![]));
         }
@@ -332,7 +388,7 @@ impl DatabaseMetrics for DatabaseEnv {
 
         metrics.push((
             "db.timed_out_not_aborted_transactions",
-            self.timed_out_not_aborted_transactions() as f64,
+            self.total_timed_out_not_aborted_transactions() as f64,
             vec![],
         ));
 
@@ -341,22 +397,17 @@ impl DatabaseMetrics for DatabaseEnv {
 }
 
 impl DatabaseEnv {
-    /// Opens the database at the specified path with the given `EnvKind`.
-    ///
-    /// It does not create the tables, for that call [`DatabaseEnv::create_tables`].
-    pub fn open(
+    /// Returns the on-disk path of the plain-state database environment.
+    pub fn plain_state_env_path(path: &Path) -> PathBuf {
+        path.join(PLAIN_STATE_ENV_DIR)
+    }
+
+    /// Opens a single MDBX environment with the provided settings.
+    pub(crate) fn open_inner_env(
         path: &Path,
         kind: DatabaseEnvKind,
-        args: DatabaseArguments,
-    ) -> Result<Self, DatabaseError> {
-        let _lock_file = if kind.is_rw() {
-            StorageLock::try_acquire(path)
-                .map_err(|err| DatabaseError::Other(err.to_string()))?
-                .into()
-        } else {
-            None
-        };
-
+        args: &DatabaseArguments,
+    ) -> Result<Environment, DatabaseError> {
         let mut inner_env = Environment::builder();
 
         let mode = match kind {
@@ -372,7 +423,7 @@ impl DatabaseEnv {
         // environment creation.
         debug_assert!(Tables::ALL.len() <= 256, "number of tables exceed max dbs");
         inner_env.set_max_dbs(256);
-        inner_env.set_geometry(args.geometry);
+        inner_env.set_geometry(args.geometry.clone());
 
         fn is_current_process(id: u32) -> bool {
             #[cfg(unix)]
@@ -479,7 +530,7 @@ impl DatabaseEnv {
                     LogLevel::Extra => 7,
                 });
             } else {
-                return Err(DatabaseError::LogLevelUnavailable(log_level))
+                return Err(DatabaseError::LogLevelUnavailable(log_level));
             }
         }
 
@@ -487,14 +538,87 @@ impl DatabaseEnv {
             inner_env.set_max_read_transaction_duration(max_read_transaction_duration);
         }
 
-        let env = Self {
-            inner: inner_env.open(path).map_err(|e| DatabaseError::Open(e.into()))?,
-            dbis: Arc::default(),
-            metrics: None,
-            _lock_file,
+        inner_env.open(path).map_err(|e| DatabaseError::Open(e.into()))
+    }
+
+    pub(crate) fn lock_plain_state_pages(env: &Environment) -> Result<(), DatabaseError> {
+        let flags = ffi::MDBX_warmup_lock | ffi::MDBX_warmup_oomsafe;
+        env.warmup(flags, PLAIN_STATE_LOCK_TIMEOUT).map_err(|e| DatabaseError::Open(e.into()))?;
+        Ok(())
+    }
+
+    /// Splits the configured max map size between MDBX environments to preserve the previous
+    /// total virtual-memory footprint.
+    pub(crate) fn args_for_instance(
+        args: &DatabaseArguments,
+        _instance: DatabaseInstance,
+    ) -> DatabaseArguments {
+        let mut adjusted = args.clone();
+        if let Some(total_max_size) = args.geometry.size.as_ref().map(|size| size.end) {
+            adjusted = adjusted.with_geometry_max_size(Some((total_max_size / 2).max(1)));
+        }
+        adjusted
+    }
+
+    /// Returns the sum of freelist pages across both MDBX environments.
+    pub fn total_freelist(&self) -> reth_libmdbx::Result<usize> {
+        Ok(self.inner.freelist()? + self.plain_inner.freelist()?)
+    }
+
+    /// Returns the total number of read transactions timed out (and still not aborted).
+    pub fn total_timed_out_not_aborted_transactions(&self) -> usize {
+        self.inner.timed_out_not_aborted_transactions()
+            + self.plain_inner.timed_out_not_aborted_transactions()
+    }
+
+    /// Opens the database at the specified path with the given `EnvKind`.
+    ///
+    /// It does not create the tables, for that call [`DatabaseEnv::create_tables`].
+    pub fn open(
+        path: &Path,
+        kind: DatabaseEnvKind,
+        args: DatabaseArguments,
+    ) -> Result<Self, DatabaseError> {
+        let _lock_file = if kind.is_rw() {
+            StorageLock::try_acquire(path)
+                .map_err(|err| DatabaseError::Other(err.to_string()))?
+                .into()
+        } else {
+            None
         };
 
-        Ok(env)
+        let plain_path = Self::plain_state_env_path(path);
+        if kind.is_rw() {
+            reth_fs_util::create_dir_all(&plain_path)
+                .map_err(|e| DatabaseError::Other(e.to_string()))?;
+        } else if !plain_path.exists() {
+            return Err(DatabaseError::Other(format!(
+                "missing plain-state MDBX environment at {}",
+                plain_path.display()
+            )));
+        }
+
+        let main_args = Self::args_for_instance(&args, DatabaseInstance::Main);
+        let plain_args = Self::args_for_instance(&args, DatabaseInstance::PlainState);
+
+        let inner = Self::open_inner_env(path, kind, &main_args)?;
+        let plain_inner = Self::open_inner_env(&plain_path, kind, &plain_args)?;
+
+        if args.lock_plain_state_in_memory {
+            if let Err(err) = Self::lock_plain_state_pages(&plain_inner) {
+                warn!(target: "storage::db::mdbx", %err, "Failed to lock plain-state pages in RAM");
+            }
+        }
+
+        Ok(Self {
+            inner,
+            plain_inner,
+            dbis: Arc::default(),
+            plain_dbis: Arc::default(),
+            metrics: None,
+            lock_plain_state_in_memory: args.lock_plain_state_in_memory,
+            _lock_file,
+        })
     }
 
     /// Enables metrics on the database.
@@ -518,7 +642,12 @@ impl DatabaseEnv {
         // Note: This is okay because self has mutable access here and `DatabaseEnv` must be Arc'ed
         // before it can be shared.
         let dbis = Arc::make_mut(&mut self.dbis);
-        dbis.extend(handles);
+        dbis.extend(handles.main);
+        let plain_dbis = Arc::make_mut(&mut self.plain_dbis);
+        plain_dbis.extend(handles.plain);
+        if self.lock_plain_state_in_memory {
+            Self::lock_plain_state_pages(&self.plain_inner)?;
+        }
 
         Ok(())
     }
@@ -534,36 +663,48 @@ impl DatabaseEnv {
         if let Some(db) = Arc::get_mut(self) {
             // Note: The db is unique and the dbis as well, and they can also be cloned.
             let dbis = Arc::make_mut(&mut db.dbis);
-            dbis.extend(handles);
+            dbis.extend(handles.main);
+            let plain_dbis = Arc::make_mut(&mut db.plain_dbis);
+            plain_dbis.extend(handles.plain);
+            if db.lock_plain_state_in_memory {
+                Self::lock_plain_state_pages(&db.plain_inner)?;
+            }
         }
         Ok(())
     }
 
     /// Creates the tables and returns the identifiers of the tables.
-    fn _create_tables<TS: TableSet>(
-        &self,
-    ) -> Result<Vec<(&'static str, ffi::MDBX_dbi)>, DatabaseError> {
-        let mut handles = Vec::new();
-        let tx = self.inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?;
+    fn _create_tables<TS: TableSet>(&self) -> Result<TrackedDbis, DatabaseError> {
+        let mut handles = TrackedDbis::default();
+        let main_tx = self.inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?;
+        let plain_tx =
+            self.plain_inner.begin_rw_txn().map_err(|e| DatabaseError::InitTx(e.into()))?;
 
         for table in TS::tables() {
             let flags =
                 if table.is_dupsort() { DatabaseFlags::DUP_SORT } else { DatabaseFlags::default() };
 
-            let db = tx
-                .create_db(Some(table.name()), flags)
-                .map_err(|e| DatabaseError::CreateTable(e.into()))?;
-            handles.push((table.name(), db.dbi()));
+            let db = match table_instance_for_name(table.name()) {
+                DatabaseInstance::Main => &main_tx,
+                DatabaseInstance::PlainState => &plain_tx,
+            }
+            .create_db(Some(table.name()), flags)
+            .map_err(|e| DatabaseError::CreateTable(e.into()))?;
+            match table_instance_for_name(table.name()) {
+                DatabaseInstance::Main => handles.main.push((table.name(), db.dbi())),
+                DatabaseInstance::PlainState => handles.plain.push((table.name(), db.dbi())),
+            }
         }
 
-        tx.commit().map_err(|e| DatabaseError::Commit(e.into()))?;
+        plain_tx.commit().map_err(|e| DatabaseError::Commit(e.into()))?;
+        main_tx.commit().map_err(|e| DatabaseError::Commit(e.into()))?;
         Ok(handles)
     }
 
     /// Records version that accesses the database with write privileges.
     pub fn record_client_version(&self, version: ClientVersion) -> Result<(), DatabaseError> {
         if version.is_empty() {
-            return Ok(())
+            return Ok(());
         }
 
         let tx = self.tx_mut()?;
