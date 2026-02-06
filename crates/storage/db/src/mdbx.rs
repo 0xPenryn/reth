@@ -9,6 +9,7 @@ pub use crate::implementation::mdbx::*;
 pub use reth_libmdbx::*;
 
 const PRE_SPLIT_DB_VERSION: u64 = 2;
+const MIGRATION_PROGRESS_INTERVAL: usize = 1_000_000;
 
 fn migrate_legacy_plain_state_tables(path: &Path, args: &DatabaseArguments) -> eyre::Result<()> {
     let plain_path = DatabaseEnv::plain_state_env_path(path);
@@ -16,7 +17,8 @@ fn migrate_legacy_plain_state_tables(path: &Path, args: &DatabaseArguments) -> e
         format!("Could not create plain-state database directory {}", plain_path.display())
     })?;
 
-    let main_args = DatabaseEnv::args_for_instance(args, DatabaseInstance::Main);
+    let main_args = DatabaseEnv::args_for_instance(args, DatabaseInstance::Main)
+        .with_max_read_transaction_duration(Some(MaxReadTransactionDuration::Unbounded));
     let plain_args = DatabaseEnv::args_for_instance(args, DatabaseInstance::PlainState);
 
     let main_env = DatabaseEnv::open_inner_env(path, DatabaseEnvKind::RW, &main_args)
@@ -28,25 +30,54 @@ fn migrate_legacy_plain_state_tables(path: &Path, args: &DatabaseArguments) -> e
 
     for table in PLAIN_STATE_TABLES {
         let source_tx = main_env.begin_ro_txn()?;
+        source_tx.disable_timeout();
         let destination_tx = plain_env.begin_rw_txn()?;
         let flags =
             if table.is_dupsort() { DatabaseFlags::DUP_SORT } else { DatabaseFlags::default() };
+        let append_flags = if table.is_dupsort() {
+            WriteFlags::APPEND | WriteFlags::APPEND_DUP
+        } else {
+            WriteFlags::APPEND
+        }
+        .bits();
 
         let destination_db = destination_tx.create_db(Some(table.name()), flags)?;
         destination_tx.clear_db(destination_db.dbi())?;
+
+        tracing::info!(target: "storage::db::mdbx", table = table.name(), "Migrating table");
 
         match source_tx.open_db(Some(table.name())) {
             Ok(source_db) => {
                 let mut copied = 0usize;
                 for row in source_tx.cursor(source_db.dbi())?.iter_slices() {
                     let (key, value) = row?;
-                    destination_tx.put(
+                    if let Err(err) = destination_tx.put(
                         destination_db.dbi(),
                         key.as_ref(),
                         value.as_ref(),
-                        WriteFlags::UPSERT,
-                    )?;
+                        WriteFlags::from_bits_truncate(append_flags),
+                    ) {
+                        match err {
+                            // Fallback for pathological ordering cases.
+                            Error::KeyExist | Error::KeyMismatch => destination_tx.put(
+                                destination_db.dbi(),
+                                key.as_ref(),
+                                value.as_ref(),
+                                WriteFlags::UPSERT,
+                            )?,
+                            other => return Err(other.into()),
+                        }
+                    }
                     copied += 1;
+
+                    if copied % MIGRATION_PROGRESS_INTERVAL == 0 {
+                        tracing::info!(
+                            target: "storage::db::mdbx",
+                            table = table.name(),
+                            copied,
+                            "Migration progress"
+                        );
+                    }
                 }
                 tracing::info!(
                     target: "storage::db::mdbx",
