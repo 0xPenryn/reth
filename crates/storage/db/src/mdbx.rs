@@ -101,6 +101,13 @@ fn migrate_legacy_plain_state_tables(path: &Path, args: &DatabaseArguments) -> e
     }
 
     if args.lock_plain_state_in_memory() {
+        if let Err(err) = DatabaseEnv::prewarm_plain_state_pages(&plain_env) {
+            tracing::warn!(
+                target: "storage::db::mdbx",
+                %err,
+                "Failed to prewarm migrated plain-state pages"
+            );
+        }
         if let Err(err) = DatabaseEnv::lock_plain_state_pages(&plain_env) {
             tracing::warn!(
                 target: "storage::db::mdbx",

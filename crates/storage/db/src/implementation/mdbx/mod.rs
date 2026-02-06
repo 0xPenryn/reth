@@ -56,6 +56,8 @@ pub const PLAIN_STATE_ENV_DIR: &str = "plain-state";
 
 /// Timeout for MDBX warmup lock operation.
 const PLAIN_STATE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout for force prewarming plain-state pages. `0` means no timeout.
+const PLAIN_STATE_PREWARM_TIMEOUT: Duration = Duration::ZERO;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DatabaseInstance {
@@ -547,6 +549,16 @@ impl DatabaseEnv {
         Ok(())
     }
 
+    /// Force-load plain-state pages into memory.
+    ///
+    /// This prewarms pages even when OS-level lock (`mlock`) cannot be applied.
+    pub(crate) fn prewarm_plain_state_pages(env: &Environment) -> Result<(), DatabaseError> {
+        let flags = ffi::MDBX_warmup_force | ffi::MDBX_warmup_oomsafe;
+        env.warmup(flags, PLAIN_STATE_PREWARM_TIMEOUT)
+            .map_err(|e| DatabaseError::Open(e.into()))?;
+        Ok(())
+    }
+
     /// Splits the configured max map size between MDBX environments to preserve the previous
     /// total virtual-memory footprint.
     pub(crate) fn args_for_instance(
@@ -606,6 +618,9 @@ impl DatabaseEnv {
 
         let mut lock_plain_state_in_memory = args.lock_plain_state_in_memory;
         if lock_plain_state_in_memory {
+            if let Err(err) = Self::prewarm_plain_state_pages(&plain_inner) {
+                warn!(target: "storage::db::mdbx", %err, "Failed to prewarm plain-state pages");
+            }
             if let Err(err) = Self::lock_plain_state_pages(&plain_inner) {
                 warn!(target: "storage::db::mdbx", %err, "Failed to lock plain-state pages in RAM");
                 lock_plain_state_in_memory = false;
