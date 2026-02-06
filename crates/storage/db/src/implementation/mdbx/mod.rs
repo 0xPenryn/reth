@@ -604,9 +604,11 @@ impl DatabaseEnv {
         let inner = Self::open_inner_env(path, kind, &main_args)?;
         let plain_inner = Self::open_inner_env(&plain_path, kind, &plain_args)?;
 
-        if args.lock_plain_state_in_memory {
+        let mut lock_plain_state_in_memory = args.lock_plain_state_in_memory;
+        if lock_plain_state_in_memory {
             if let Err(err) = Self::lock_plain_state_pages(&plain_inner) {
                 warn!(target: "storage::db::mdbx", %err, "Failed to lock plain-state pages in RAM");
+                lock_plain_state_in_memory = false;
             }
         }
 
@@ -616,7 +618,7 @@ impl DatabaseEnv {
             dbis: Arc::default(),
             plain_dbis: Arc::default(),
             metrics: None,
-            lock_plain_state_in_memory: args.lock_plain_state_in_memory,
+            lock_plain_state_in_memory,
             _lock_file,
         })
     }
@@ -646,7 +648,14 @@ impl DatabaseEnv {
         let plain_dbis = Arc::make_mut(&mut self.plain_dbis);
         plain_dbis.extend(handles.plain);
         if self.lock_plain_state_in_memory {
-            Self::lock_plain_state_pages(&self.plain_inner)?;
+            if let Err(err) = Self::lock_plain_state_pages(&self.plain_inner) {
+                warn!(
+                    target: "storage::db::mdbx",
+                    %err,
+                    "Failed to lock plain-state pages in RAM after table creation"
+                );
+                self.lock_plain_state_in_memory = false;
+            }
         }
 
         Ok(())
@@ -667,7 +676,14 @@ impl DatabaseEnv {
             let plain_dbis = Arc::make_mut(&mut db.plain_dbis);
             plain_dbis.extend(handles.plain);
             if db.lock_plain_state_in_memory {
-                Self::lock_plain_state_pages(&db.plain_inner)?;
+                if let Err(err) = Self::lock_plain_state_pages(&db.plain_inner) {
+                    warn!(
+                        target: "storage::db::mdbx",
+                        %err,
+                        "Failed to lock plain-state pages in RAM after table creation"
+                    );
+                    db.lock_plain_state_in_memory = false;
+                }
             }
         }
         Ok(())
