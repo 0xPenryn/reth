@@ -58,6 +58,7 @@ min-debug-logs = ["tracing/release_max_level_debug"]
 min-trace-logs = ["tracing/release_max_level_trace"]
 
 edge = ["reth-optimism-cli/edge"]
+revmc = ["reth-optimism-cli/revmc", "reth-optimism-node/revmc"]
 
 [[bin]]
 name = "op-reth"

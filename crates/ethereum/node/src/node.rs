@@ -59,6 +59,9 @@ use reth_transaction_pool::{
 use revm::context::TxEnv;
 use std::{marker::PhantomData, sync::Arc, time::SystemTime};
 
+#[cfg(feature = "revmc")]
+use crate::revmc::RevmcEthEvmFactory;
+
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -442,6 +445,15 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        #[cfg(feature = "revmc")]
+        {
+            info!(target: "reth::cli", "revmc-reth JIT execution is enabled");
+            return Ok(EthEvmConfig::new_with_evm_factory(
+                ctx.chain_spec(),
+                RevmcEthEvmFactory::default(),
+            ));
+        }
+
         Ok(EthEvmConfig::new(ctx.chain_spec()))
     }
 }

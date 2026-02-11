@@ -19,6 +19,9 @@ pub use reth_ethereum_engine_primitives::EthEngineTypes;
 pub mod evm;
 pub use evm::EthEvmConfig;
 
+#[cfg(feature = "revmc")]
+pub(crate) mod revmc;
+
 #[allow(deprecated)]
 pub use evm::EthExecutorProvider;
 

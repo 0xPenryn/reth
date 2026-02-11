@@ -7,7 +7,23 @@ LABEL org.opencontainers.image.source=https://github.com/paradigmxyz/reth
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y libclang-dev pkg-config
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg gpgv lsb-release pkg-config; \
+    if ! apt-get install -y --no-install-recommends clang-21 llvm-21 llvm-21-dev libclang-21-dev libpolly-21-dev; then \
+        install -d /etc/apt/keyrings; \
+        curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/keyrings/llvm-archive-keyring.gpg; \
+        codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
+        echo "deb [signed-by=/etc/apt/keyrings/llvm-archive-keyring.gpg] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-21 main" > /etc/apt/sources.list.d/llvm.list; \
+        apt-get -o APT::Key::gpgvcommand=/usr/bin/gpgv update; \
+        apt-get install -y --no-install-recommends clang-21 llvm-21 llvm-21-dev libclang-21-dev libpolly-21-dev; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+ENV LLVM_SYS_210_PREFIX=/usr/lib/llvm-21
+ENV LLVM_SYS_180_PREFIX=/usr/lib/llvm-21
+ENV LLVM_CONFIG_PATH=/usr/lib/llvm-21/bin/llvm-config
+ENV LIBCLANG_PATH=/usr/lib/llvm-21/lib
+ENV PATH="/usr/lib/llvm-21/bin:${PATH}"
 
 # Builds a cargo-chef plan
 FROM chef AS planner

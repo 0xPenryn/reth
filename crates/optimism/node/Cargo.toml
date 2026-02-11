@@ -64,6 +64,8 @@ clap.workspace = true
 serde.workspace = true
 eyre.workspace = true
 url.workspace = true
+revmc-reth = { git = "https://github.com/paradigmxyz/revmc.git", rev = "b6395f4a1f265e5cf2cbb047c442fee65ef2b601", optional = true }
+alloy-primitives-08 = { package = "alloy-primitives", version = "0.8.26", optional = true }
 
 # test-utils dependencies
 reth-e2e-test-utils = { workspace = true, optional = true }
@@ -130,6 +132,7 @@ test-utils = [
     "reth-stages-types/test-utils",
 ]
 reth-codec = ["reth-optimism-primitives/reth-codec"]
+revmc = ["dep:revmc-reth", "dep:alloy-primitives-08"]
 
 [[test]]
 name = "e2e_testsuite"

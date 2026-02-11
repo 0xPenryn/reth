@@ -22,6 +22,9 @@ pub use engine::OpEngineTypes;
 pub mod node;
 pub use node::*;
 
+#[cfg(feature = "revmc")]
+pub(crate) mod revmc;
+
 pub mod rpc;
 pub use rpc::OpEngineApiBuilder;
 

@@ -53,6 +53,8 @@ revm = { workspace = true, features = ["secp256k1", "blst", "c-kzg", "memory_lim
 
 # misc
 eyre.workspace = true
+revmc-reth = { git = "https://github.com/paradigmxyz/revmc.git", rev = "b6395f4a1f265e5cf2cbb047c442fee65ef2b601", optional = true }
+alloy-primitives-08 = { package = "alloy-primitives", version = "0.8.26", optional = true }
 
 [dev-dependencies]
 reth-db.workspace = true
@@ -113,3 +115,4 @@ test-utils = [
     "reth-evm-ethereum/test-utils",
     "reth-stages-types/test-utils",
 ]
+revmc = ["dep:revmc-reth", "dep:alloy-primitives-08"]

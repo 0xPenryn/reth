@@ -1,5 +1,7 @@
 //! Optimism Node types config.
 
+#[cfg(feature = "revmc")]
+use crate::revmc::RevmcOpEvmFactory;
 use crate::{
     args::RollupArgs,
     engine::OpEngineValidator,
@@ -35,6 +37,8 @@ use reth_node_builder::{
 };
 use reth_optimism_chainspec::{OpChainSpec, OpHardfork};
 use reth_optimism_consensus::OpBeaconConsensus;
+#[cfg(feature = "revmc")]
+use reth_optimism_evm::OpBlockExecutorFactory;
 use reth_optimism_evm::{OpEvmConfig, OpRethReceiptBuilder};
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_payload_builder::{
@@ -877,13 +881,37 @@ impl<Node> ExecutorBuilder<Node> for OpExecutorBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = OpPrimitives>>,
 {
+    #[cfg(not(feature = "revmc"))]
     type EVM =
         OpEvmConfig<<Node::Types as NodeTypes>::ChainSpec, <Node::Types as NodeTypes>::Primitives>;
+    #[cfg(feature = "revmc")]
+    type EVM = OpEvmConfig<
+        <Node::Types as NodeTypes>::ChainSpec,
+        <Node::Types as NodeTypes>::Primitives,
+        OpRethReceiptBuilder,
+        RevmcOpEvmFactory,
+    >;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = OpEvmConfig::new(ctx.chain_spec(), OpRethReceiptBuilder::default());
+        #[cfg(feature = "revmc")]
+        {
+            info!(target: "reth::cli", "revmc-reth JIT execution is enabled");
+            return Ok(OpEvmConfig {
+                executor_factory: OpBlockExecutorFactory::new(
+                    OpRethReceiptBuilder::default(),
+                    ctx.chain_spec(),
+                    RevmcOpEvmFactory::default(),
+                ),
+                block_assembler: reth_optimism_evm::OpBlockAssembler::new(ctx.chain_spec()),
+                _pd: PhantomData,
+            });
+        }
 
-        Ok(evm_config)
+        #[cfg(not(feature = "revmc"))]
+        {
+            let evm_config = OpEvmConfig::new(ctx.chain_spec(), OpRethReceiptBuilder::default());
+            return Ok(evm_config);
+        }
     }
 }
 
