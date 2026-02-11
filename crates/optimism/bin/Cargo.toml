@@ -26,6 +26,9 @@ tracing.workspace = true
 [lints]
 workspace = true
 
+[build-dependencies]
+revmc-build = { git = "https://github.com/paradigmxyz/revmc.git", rev = "ff5b115b616c0c6e80dd68601c67d6c5f0f12640" }
+
 [features]
 default = ["jemalloc", "otlp", "reth-optimism-evm/portable", "js-tracer", "keccak-cache-global", "asm-keccak"]
 

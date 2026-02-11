@@ -1,0 +1,34 @@
+[package]
+name = "revmc-reth"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "revmc integration for reth and op-reth"
+
+[lints]
+workspace = true
+
+[dependencies]
+revmc = { git = "https://github.com/paradigmxyz/revmc.git", rev = "ff5b115b616c0c6e80dd68601c67d6c5f0f12640", features = ["llvm-prefer-dynamic"] }
+revmc-builtins = { git = "https://github.com/paradigmxyz/revmc.git", rev = "ff5b115b616c0c6e80dd68601c67d6c5f0f12640" }
+revmc-context = { git = "https://github.com/paradigmxyz/revmc.git", rev = "ff5b115b616c0c6e80dd68601c67d6c5f0f12640" }
+
+revm.workspace = true
+revm-primitives.workspace = true
+revm-interpreter.workspace = true
+revm-bytecode.workspace = true
+
+alloy-primitives.workspace = true
+
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+lru = "0.12"
+
+tracing.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = []

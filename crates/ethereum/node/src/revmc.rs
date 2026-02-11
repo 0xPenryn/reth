@@ -2,9 +2,7 @@
 
 use alloy_evm::{eth::EthEvmBuilder, precompiles::PrecompilesMap, Database, EvmEnv, EvmFactory};
 use alloy_primitives::{Address, Bytes};
-use alloy_primitives_08::B256 as RevmcB256;
 use core::{
-    mem,
     ops::{Deref, DerefMut},
 };
 use revm::{
@@ -19,7 +17,7 @@ use revm::{
         EthFrame, MainnetHandler, PrecompileProvider,
     },
     inspector::NoOpInspector,
-    interpreter::{interpreter::EthInterpreter, InterpreterResult, SharedMemory},
+    interpreter::{interpreter::EthInterpreter, InterpreterResult},
     Context, ExecuteEvm, InspectEvm, Inspector, MainBuilder, MainContext, SystemCallEvm,
 };
 use revmc_reth::{RevmcConfig, RevmcRuntime};
@@ -35,11 +33,6 @@ type InnerEthEvm<DB, I> = revm::context::Evm<
 >;
 type InnerRunnerEvm<CTX, INSP, I, P> =
     revm::context::Evm<CTX, INSP, I, P, EthFrame<EthInterpreter>>;
-
-#[inline]
-fn to_revmc_b256(hash: revm::primitives::B256) -> RevmcB256 {
-    RevmcB256::from_slice(hash.as_slice())
-}
 
 /// Ethereum EVM wrapper that routes frame execution through `revmc-reth`.
 #[allow(missing_debug_implementations)]
@@ -273,19 +266,11 @@ where
         let instructions = &mut self.inner.instruction;
 
         let bytecode_hash = frame.interpreter.bytecode.get_or_calculate_hash();
-        let revmc_bytecode_hash = to_revmc_b256(bytecode_hash);
+        let revmc_bytecode_hash = bytecode_hash;
         let spec_id = frame.interpreter.runtime_flag.spec_id;
 
         let action = if let Some(compiled) = self.runtime.get_compiled(revmc_bytecode_hash) {
-            let mut memory = mem::replace(&mut frame.interpreter.memory, SharedMemory::invalid());
-            let action = unsafe {
-                compiled.call_with_interpreter_and_memory(
-                    &mut frame.interpreter,
-                    &mut memory,
-                    context,
-                )
-            };
-            frame.interpreter.memory = memory;
+            let action = unsafe { compiled.call_with_interpreter(&mut frame.interpreter, context) };
 
             self.runtime.record_execution(
                 revmc_bytecode_hash,
