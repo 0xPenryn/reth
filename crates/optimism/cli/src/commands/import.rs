@@ -12,7 +12,7 @@ use reth_downloaders::file_client::{ChunkedFileReader, DEFAULT_BYTE_LEN_CHUNK_CH
 use reth_node_builder::BlockTy;
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
-use reth_optimism_evm::OpExecutorProvider;
+use reth_optimism_node::op_executor_provider;
 use reth_optimism_primitives::{bedrock::is_dup_tx, OpPrimitives};
 use reth_provider::{BlockNumReader, ChainSpecProvider, HeaderProvider, StageCheckpointReader};
 use reth_prune::PruneModes;
@@ -105,7 +105,7 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> ImportOpCommand<C> {
                 Arc::new(file_client),
                 static_file_producer.clone(),
                 true,
-                OpExecutorProvider::optimism(provider_factory.chain_spec()),
+                op_executor_provider(provider_factory.chain_spec()),
             )?;
 
             // override the tip

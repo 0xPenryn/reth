@@ -877,6 +877,37 @@ impl<NetworkT, RpcMiddleware> OpAddOnsBuilder<NetworkT, RpcMiddleware> {
 #[non_exhaustive]
 pub struct OpExecutorBuilder;
 
+#[cfg(feature = "revmc")]
+type OpCliExecutorProvider =
+    OpEvmConfig<OpChainSpec, OpPrimitives, OpRethReceiptBuilder, RevmcOpEvmFactory>;
+
+#[cfg(not(feature = "revmc"))]
+type OpCliExecutorProvider = reth_optimism_evm::OpExecutorProvider;
+
+/// Returns the executor config used by OP CLI commands.
+///
+/// This keeps CLI command component wiring aligned with the node's active EVM factory
+/// (`OpEvmFactory` by default, `RevmcOpEvmFactory` when `revmc` is enabled).
+pub fn op_executor_provider(spec: Arc<OpChainSpec>) -> OpCliExecutorProvider {
+    #[cfg(feature = "revmc")]
+    {
+        return OpEvmConfig {
+            executor_factory: OpBlockExecutorFactory::new(
+                OpRethReceiptBuilder::default(),
+                spec.clone(),
+                RevmcOpEvmFactory::default(),
+            ),
+            block_assembler: reth_optimism_evm::OpBlockAssembler::new(spec),
+            _pd: PhantomData,
+        };
+    }
+
+    #[cfg(not(feature = "revmc"))]
+    {
+        OpCliExecutorProvider::optimism(spec)
+    }
+}
+
 impl<Node> ExecutorBuilder<Node> for OpExecutorBuilder
 where
     Node: FullNodeTypes<Types: NodeTypes<ChainSpec: OpHardforks, Primitives = OpPrimitives>>,

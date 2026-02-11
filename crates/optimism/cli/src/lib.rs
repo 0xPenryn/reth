@@ -57,6 +57,7 @@ use reth_optimism_node::args::RollupArgs;
 // This allows us to manually enable node metrics features, required for proper jemalloc metric
 // reporting
 use reth_node_metrics as _;
+use reth_optimism_evm as _;
 
 /// The main op-reth cli interface.
 ///
